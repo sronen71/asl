@@ -34,7 +34,8 @@ def get_char_dict():
 def main():
     output_path = "output/"
     char_dict = get_char_dict()
-    files1 = glob.glob(input_path + "train_landmarks/*.parquet")
+    #files1 = glob.glob(input_path + "train_landmarks/*.parquet")
+    files1=[]
     files2 = glob.glob(input_path + "supplemental_landmarks/*.parquet")
     files = files1 + files2
 
@@ -45,6 +46,7 @@ def main():
     # MAX_STRING_LEN = 43
 
     os.makedirs(output_path + "records/", exist_ok=True)
+    os.makedirs(output_path + "sup_records/", exist_ok=True)
     fold = 0
     options = tf.io.TFRecordOptions(compression_type="GZIP")
     for file_name in files:
