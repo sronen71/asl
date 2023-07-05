@@ -1,21 +1,80 @@
 import os
+import gc
 import numpy as np
 import glob
+import random
 from preprocess import ROWS_PER_FRAME, get_char_dict
-from utils import POINT_LANDMARKS, LNOSE, RNOSE, LHAND, RHAND, LLIP, RLIP, LPOSE, RPOSE, LEYE, REYE
+from utils import (
+    POINT_LANDMARKS,
+    LNOSE,
+    RNOSE,
+    LHAND,
+    RHAND,
+    LLIP,
+    RLIP,
+    LPOSE,
+    RPOSE,
+    LEYE,
+    REYE,
+    CHANNELS,
+)
 from visualize import visualize_train
+from utils import OneCycleLR, Snapshot, SWA, FGM, AWP
+from config import CFG
+from model import get_model, CTCLoss1
 
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+# os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import tensorflow as tf  # noqa: E402
+import tensorflow_addons as tfa  # noqa: E402
+
+tf.autograph.set_verbosity(10, alsologtostdout=True)
 
 MAX_STRING_LEN = 50
-MAX_LEN = 400
-COORDINATES_PAD = -100.0
+INPUT_PAD = -100.0
 char_dict = get_char_dict()
 LABEL_PAD = char_dict["PAD"]
 
-NUM_NODES = len(POINT_LANDMARKS)
-CHANNELS = 6 * NUM_NODES
+
+def count_data_items(filenames):
+    return 1000 * len(filenames)
+
+
+# Seed all random number generators
+def seed_everything(seed=42):
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    tf.random.set_seed(seed)
+
+
+def get_strategy(device="GPU"):
+    is_tpu = False
+    if "TPU" in device:
+        tpu = "local" if device == "TPU-VM" else None
+        print("connecting to TPU...")
+        tpu = tf.distribute.cluster_resolver.TPUClusterResolver.connect(tpu=tpu)
+        strategy = tf.distribute.TPUStrategy(tpu)
+        is_tpu = True
+
+    if device == "GPU":
+        ngpu = len(tf.config.experimental.list_physical_devices("GPU"))
+        if ngpu > 1:
+            print("Using multi GPU")
+            strategy = tf.distribute.MirroredStrategy()
+        elif ngpu == 1:
+            print("Using single GPU")
+            strategy = tf.distribute.get_strategy()
+
+    if device == "GPU":
+        print("Num GPUs Available: ", ngpu)
+
+    REPLICAS = strategy.num_replicas_in_sync
+    print(f"REPLICAS: {REPLICAS}")
+
+    return strategy, REPLICAS, is_tpu
+
+
+STRATEGY, N_REPLICAS, IS_TPU = get_strategy()
 
 
 def interp1d_(x, target_len, method="random"):
@@ -48,7 +107,7 @@ def tf_nan_std(x, center=None, axis=0, keepdims=False):
 
 
 class Preprocess(tf.keras.layers.Layer):
-    def __init__(self, max_len=MAX_LEN, point_landmarks=POINT_LANDMARKS, **kwargs):
+    def __init__(self, max_len, point_landmarks=POINT_LANDMARKS, **kwargs):
         super().__init__(**kwargs)
         self.max_len = max_len
         self.point_landmarks = point_landmarks
@@ -181,7 +240,7 @@ def spatial_random_affine(
     return xyz
 
 
-def temporal_crop(x, max_length=MAX_LEN):
+def temporal_crop(x, max_length):
     # crop randomly if number of frames greater than maximum length
     l0 = tf.shape(x)[0]
     offset = tf.random.uniform(
@@ -261,7 +320,7 @@ def decode_tfrec(record_bytes):
     return out
 
 
-def preprocess(x, augment=False, max_len=MAX_LEN):
+def preprocess(x, max_len, augment=False):
     coord = x["coordinates"]
     coord = filter_nans_tf(coord)
     if augment:
@@ -272,8 +331,8 @@ def preprocess(x, augment=False, max_len=MAX_LEN):
 
 def get_tfrec_dataset(
     tfrecords,
+    max_len,
     batch_size=64,
-    max_len=MAX_LEN,
     drop_remainder=False,
     augment=False,
     shuffle=False,
@@ -299,7 +358,7 @@ def get_tfrec_dataset(
         ds = ds.padded_batch(
             batch_size,
             padding_values=(
-                tf.constant(COORDINATES_PAD, dtype=tf.float32),
+                tf.constant(INPUT_PAD, dtype=tf.float32),
                 tf.constant(LABEL_PAD, dtype=tf.int64),
                 tf.constant(0, dtype=tf.int64),
             ),
@@ -312,13 +371,7 @@ def get_tfrec_dataset(
     return ds
 
 
-def main():
-    records_path = "output/records/"
-    train_file_names = glob.glob(records_path + "/*.tfrecord")
-    print(train_file_names)
-    augment = True
-    # augment = False
-    ds = get_tfrec_dataset(train_file_names, augment=augment, batch_size=1024)
+def explore(ds):
     for feature, label, sequence_id in ds:
         feature = feature.numpy()
         label = label.numpy()
@@ -329,6 +382,217 @@ def main():
             coordinates = feature[i, :].reshape(-1, N // 6, 6)
             coordinates = coordinates[:, :, :2]
             visualize_train(sequence_id[i], coordinates, label[i, :])
+
+
+def train_fold(config, fold, train_files, valid_files=None, strategy=STRATEGY, summary=True):
+    seed_everything(config.seed)
+    tf.keras.backend.clear_session()
+    gc.collect()
+    tf.config.optimizer.set_jit(True)
+
+    if config.fp16:
+        policy = tf.keras.mixed_precision.Policy("mixed_bfloat16")
+        tf.keras.mixed_precision.set_global_policy(policy)
+        # policy = tf.keras.mixed_precision.Policy("mixed_float16")
+        # tf.keras.mixed_precision.set_global_policy(policy)
+    else:
+        policy = tf.keras.mixed_precision.Policy("float32")
+        tf.keras.mixed_precision.set_global_policy(policy)
+
+    if fold != "all":
+        train_ds = get_tfrec_dataset(
+            train_files,
+            max_len=config.max_len,
+            batch_size=config.batch_size,
+            drop_remainder=True,
+            augment=True,
+            repeat=True,
+            shuffle=32768,
+        )
+        valid_ds = get_tfrec_dataset(
+            valid_files,
+            batch_size=config.batch_size,
+            max_len=config.max_len,
+            drop_remainder=False,
+            repeat=False,
+            shuffle=False,
+        )
+    else:
+        train_ds = get_tfrec_dataset(
+            train_files,
+            batch_size=config.batch_size,
+            max_len=config.max_len,
+            drop_remainder=False,
+            augment=True,
+            repeat=True,
+            shuffle=32768,
+        )
+        valid_ds = None
+        valid_files = []
+
+    num_train = count_data_items(train_files)
+    num_valid = count_data_items(valid_files)
+    steps_per_epoch = num_train // config.batch_size
+    with strategy.scope():
+        dropout_step = config.dropout_start_epoch * steps_per_epoch
+        model = get_model(
+            max_len=config.max_len,
+            dropout_step=dropout_step,
+            dim=config.dim,
+            input_pad=INPUT_PAD,
+            output_dim=config.output_dim,
+        )
+
+        schedule = OneCycleLR(
+            lr=config.lr,
+            epochs=config.epoch,
+            warmup_epochs=config.epoch * config.warmup,
+            steps_per_epoch=steps_per_epoch,
+            resume_epoch=config.resume,
+            decay_epochs=config.epoch,
+            lr_min=config.lr_min,
+            decay_type=config.decay_type,
+            warmup_type="linear",
+        )
+        decay_schedule = OneCycleLR(
+            config.lr * config.weight_decay,
+            config.epoch,
+            warmup_epochs=config.epoch * config.warmup,
+            steps_per_epoch=steps_per_epoch,
+            resume_epoch=config.resume,
+            decay_epochs=config.epoch,
+            lr_min=config.lr_min * config.weight_decay,
+            decay_type=config.decay_type,
+            warmup_type="linear",
+        )
+
+        awp_step = config.awp_start_epoch * steps_per_epoch
+        if config.fgm:
+            model = FGM(
+                model.input, model.output, delta=config.awp_lambda, eps=0.0, start_step=awp_step
+            )
+        elif config.awp:
+            model = AWP(
+                model.input, model.output, delta=config.awp_lambda, eps=0.0, start_step=awp_step
+            )
+
+        opt = tfa.optimizers.RectifiedAdam(
+            learning_rate=schedule, weight_decay=decay_schedule, sma_threshold=4
+        )  # , clipvalue=1.)
+        opt = tfa.optimizers.Lookahead(opt, sync_period=5)
+
+        # loss=[
+        #    tf.keras.losses.CategoricalCrossentropy(from_logits=True, label_smoothing=0.1)
+        # ]
+        loss = CTCLoss1(pad_token_idx=LABEL_PAD)
+
+        model.compile(
+            optimizer=opt,
+            loss=loss,
+            metrics=[
+                [
+                    tf.keras.metrics.CategoricalAccuracy(),
+                ],
+            ],
+            steps_per_execution=steps_per_epoch,
+            # run_eagerly=True,
+        )
+
+    if summary:
+        print()
+        model.summary()
+        print()
+        print(train_ds, valid_ds)
+        print()
+        # schedule.plot()
+        # print()
+    print(f"---------fold{fold}---------")
+    print(f"train:{num_train} valid:{num_valid}")
+    print()
+
+    if config.resume:
+        print(f"resume from epoch{config.resume}")
+        model.load_weights(f"{config.output_dir}/{config.comment}-fold{fold}-last.h5")
+        if train_ds is not None:
+            model.evaluate(train_ds.take(steps_per_epoch))
+        if valid_ds is not None:
+            model.evaluate(valid_ds)
+
+    logger = tf.keras.callbacks.CSVLogger(
+        f"{config.output_dir}/{config.comment}-fold{fold}-logs.csv"
+    )
+    sv_loss = tf.keras.callbacks.ModelCheckpoint(
+        f"{config.output_dir}/{config.comment}-fold{fold}-best.h5",
+        monitor="val_loss",
+        verbose=0,
+        save_best_only=True,
+        save_weights_only=True,
+        mode="min",
+        save_freq="epoch",
+    )
+    snap = Snapshot(f"{config.output_dir}/{config.comment}-fold{fold}", config.snapshot_epochs)
+    # stochastic weight averaging
+    swa = SWA(
+        f"{config.output_dir}/{config.comment}-fold{fold}",
+        config.swa_epochs,
+        strategy=strategy,
+        train_ds=train_ds,
+        valid_ds=valid_ds,
+        valid_steps=(num_valid // config.batch_size),
+    )
+    callbacks = []
+    if config.save_output:
+        callbacks.append(logger)
+        callbacks.append(snap)
+        # callbacks.append(swa)
+        if fold != "all":
+            callbacks.append(sv_loss)
+
+    history = model.fit(
+        train_ds,
+        epochs=config.epoch - config.resume,
+        steps_per_epoch=steps_per_epoch,
+        callbacks=callbacks,
+        validation_data=valid_ds,
+        verbose=config.verbose,
+        validation_steps=(num_valid // config.batch_size),
+    )
+
+    if config.save_output:  # reload the saved best weights checkpoint
+        model.load_weights(f"{config.output_dir}/{config.comment}-fold{fold}-best.h5")
+    if fold != "all":
+        cv = model.evaluate(
+            valid_ds, verbose=config.verbose, steps=(num_valid // config.batch_size)
+        )
+    else:
+        cv = None
+
+    return model, cv, history
+
+
+def train_folds(train_filenames, folds, config=CFG, strategy=STRATEGY, summary=True):
+    for fold in folds:
+        if fold != "all":
+            all_files = train_filenames
+            train_files = [x for x in all_files if f"fold{fold}" not in x]
+            valid_files = [x for x in all_files if f"fold{fold}" in x]
+        else:
+            train_files = train_filenames
+            valid_files = None
+
+        train_fold(config, fold, train_files, valid_files, strategy=strategy, summary=summary)
+    return
+
+
+def main():
+    records_path = "output/records/"
+    train_filenames = glob.glob(records_path + "/*.tfrecord")[:1]
+    print(train_filenames)
+    # augment = True
+    # ds = get_tfrec_dataset(train_file_names, augment=augment, batch_size=1024)
+    # explore(ds)
+    # train_fold(train_filenames, [0])
+    train_folds(train_filenames, folds=["all"])
 
 
 if __name__ == "__main__":

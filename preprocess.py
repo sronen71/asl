@@ -27,15 +27,15 @@ def get_char_dict():
 
     char_dict["SOS"] = 59
     char_dict["EOS"] = 60
-    char_dict["PAD"] = -1
+    char_dict["PAD"] = 61
     return char_dict
 
 
 def main():
     output_path = "output/"
     char_dict = get_char_dict()
-    #files1 = glob.glob(input_path + "train_landmarks/*.parquet")
-    files1=[]
+    # files1 = glob.glob(input_path + "train_landmarks/*.parquet")
+    files1 = []
     files2 = glob.glob(input_path + "supplemental_landmarks/*.parquet")
     files = files1 + files2
 
