@@ -90,17 +90,9 @@ def get_strategy(device="GPU"):
 STRATEGY, N_REPLICAS, IS_TPU = get_strategy()
 
 
-def interp1d_(x, target_len, method="random"):
+def interp1d_(x, target_len):
     target_len = tf.maximum(1, target_len)
-    if method == "random":
-        if tf.random.uniform(()) < 0.33:
-            x = tf.image.resize(x, (target_len, tf.shape(x)[1]), "bilinear")
-        elif tf.random.uniform(()) < 0.5:
-            x = tf.image.resize(x, (target_len, tf.shape(x)[1]), "bicubic")
-        else:
-            x = tf.image.resize(x, (target_len, tf.shape(x)[1]), "nearest")
-    else:
-        x = tf.image.resize(x, (target_len, tf.shape(x)[1]), method)
+    x = tf.image.resize(x, (target_len, tf.shape(x)[1]))
     return x
 
 
@@ -207,9 +199,9 @@ def resample(x, rate=(0.8, 1.2)):
 def spatial_random_affine(
     xyz,
     scale=(0.8, 1.2),
-    shear=(-0.15, 0.15),
+    shear=(-0.1, 0.1),
     shift=(-0.1, 0.1),
-    degree=(-30, 30),
+    degree=(-20, 20),
 ):
     center = tf.constant([0.5, 0.5])
     if degree is not None:
@@ -288,17 +280,17 @@ def spatial_mask(x, size=(0.1, 0.3), mask_value=float("nan")):
 
 
 def augment_fn(x, always=False, max_len=None):
-    if tf.random.uniform(()) < 0.8 or always:
+    if tf.random.uniform(()) < 0.5 or always:
         x = resample(x, (0.5, 1.5))
     if tf.random.uniform(()) < 0.5 or always:
         x = flip_lr(x)
-    if max_len is not None:
-        x = temporal_crop(x, max_len)
-    if tf.random.uniform(()) < 0.75 or always:
+    # if max_len is not None:
+    #    x = temporal_crop(x, max_len)
+    if tf.random.uniform(()) < 0.5 or always:
         x = spatial_random_affine(x)
     if tf.random.uniform(()) < 0.2 or always:
         x = temporal_mask(x)
-    if tf.random.uniform(()) < 0.3 or always:
+    if tf.random.uniform(()) < 0.2 or always:
         x = spatial_mask(x)
     return x
 
