@@ -1,9 +1,15 @@
 import os
 from matplotlib import pyplot as plt
 from preprocess import get_char_dict
+import numpy as np
+from Levenshtein import distance as Lev_distance
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import tensorflow as tf  # noqa: E402
+
+char_dict = get_char_dict()
+inv_dict = {v: k for k, v in char_dict.items()}
+
 
 NOSE = [1, 2, 98, 327]
 LIP = [
@@ -104,8 +110,7 @@ POINT_LANDMARKS = LIP + LHAND + RHAND + NOSE + REYE + LEYE
 
 
 NUM_NODES = len(POINT_LANDMARKS)
-# CHANNELS = 6 * NUM_NODES
-CHANNELS = 2 * NUM_NODES
+CHANNELS = 6 * NUM_NODES
 
 
 class OneCycleLR(tf.keras.optimizers.schedules.LearningRateSchedule):
@@ -293,7 +298,7 @@ class SWA(tf.keras.callbacks.Callback):
         self.valid_steps = valid_steps
         self.strategy = strategy
 
-    @tf.function
+    @tf.function(jit_compile=True)
     def train_step(self, iterator):
         """The step function for one training step."""
 
@@ -448,7 +453,7 @@ def num_to_char_fn(y):
     return [num_to_char_dict.get(x, "") for x in y]
 
 
-@tf.function()
+@tf.function(jit_compile=True)
 def decode_phrase(pred):
     pad_token_idx = 59
     x = tf.argmax(pred, axis=1)
@@ -495,3 +500,44 @@ class CallbackEval(tf.keras.callbacks.Callback):
             print(f"Target    : {targets[i]}")
             print(f"Prediction: {predictions[i]}, len: {len(predictions[i])}")
             print("-" * 100)
+
+
+def calculate_N_D(s1, s2):
+    length = len(s1)
+    lvd = Lev_distance(s1, s2)
+    return lvd, length
+
+
+def code_to_label(label_code):
+    label = [inv_dict[x] for x in label_code if inv_dict[x] != "P"]
+    label = "".join(label)
+    return label
+
+
+def convert_to_strings(batch_label_code):
+    output = []
+    for label_code in batch_label_code:
+        output.append(code_to_label(label_code))
+    return output
+
+
+def metric(val_ds, model):
+    global_N, global_D = 0, 0
+    count = 0
+    for batch in val_ds:
+        count += 1
+        print(count)
+        feature, label = batch
+        logits = model(feature)
+        label = label.numpy()
+        target_strings = convert_to_strings(label)
+        predict_strings = decode_batch_predictions(logits)
+        values = [
+            calculate_N_D(target, predict)
+            for target, predict in zip(target_strings, predict_strings)
+        ]
+        global_D += np.sum([x[0] for x in values])
+        global_N += np.sum([x[1] for x in values])
+
+    metric_value = np.clip((global_N - global_D) / global_N, a_min=0, a_max=1)
+    return metric_value

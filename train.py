@@ -17,12 +17,12 @@ from utils import (
     LEYE,
     REYE,
     CHANNELS,
-    CallbackEval,
+    # CallbackEval,
 )
 from visualize import visualize_train
 from utils import OneCycleLR, Snapshot, SWA, FGM, AWP
 from config import CFG
-from model import get_model, get_model2, CTCLoss1, CTCLoss3
+from model import get_model, CTCLoss
 
 # os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import tensorflow as tf  # noqa: E402
@@ -35,6 +35,14 @@ MAX_STRING_LEN = 50
 INPUT_PAD = -100.0
 char_dict = get_char_dict()
 LABEL_PAD = char_dict["P"]
+
+
+def resize_pad(x, max_len):
+    if tf.shape(x)[1] < max_len:
+        x = tf.pad(x, ([[0, max_len - tf.shape(x)[0]], [0, 0], [0, 0]]), constant_values=INPUT_PAD)
+    else:
+        x = tf.image.resize(x, (max_len, tf.shape(x)[1]))
+    return x
 
 
 def count_data_items(dataset):
@@ -148,12 +156,13 @@ class Preprocess(tf.keras.layers.Layer):
         x = tf.concat(
             [
                 tf.reshape(x, (-1, length, 2 * len(self.point_landmarks))),
-                # tf.reshape(dx, (-1, length, 2 * len(self.point_landmarks))),
-                # tf.reshape(dx2, (-1, length, 2 * len(self.point_landmarks))),
+                tf.reshape(dx, (-1, length, 2 * len(self.point_landmarks))),
+                tf.reshape(dx2, (-1, length, 2 * len(self.point_landmarks))),
             ],
             axis=-1,
         )
         # x = tf.reshape(x, (-1, length, 2 * len(self.point_landmarks)))
+
         x = tf.where(tf.math.is_nan(x), tf.constant(0.0, x.dtype), x)
         return x
 
@@ -324,9 +333,9 @@ def preprocess(x, max_len, augment=False):
     coord = x["coordinates"]
 
     coord = filter_nans_tf(coord)
-
     if augment:
         coord = augment_fn(coord, max_len=max_len)
+    coord = resize_pad(coord, max_len=max_len)
     coord = tf.ensure_shape(coord, (None, ROWS_PER_FRAME, 3))
     return (
         tf.cast(Preprocess(max_len=max_len)(coord)[0], tf.float32),
@@ -402,6 +411,7 @@ def explore(ds):
             coordinates = coordinates[:, :, :2]
             # visualize_train(sequence_id[i], coordinates, label[i, :])
             visualize_train("", coordinates, label[i, :])
+        break
 
 
 def train_fold(config, fold, train_files, valid_files=None, strategy=STRATEGY, summary=True):
@@ -411,16 +421,16 @@ def train_fold(config, fold, train_files, valid_files=None, strategy=STRATEGY, s
     tf.config.optimizer.set_jit(True)
 
     if config.fp16:
-        policy = tf.keras.mixed_precision.Policy("mixed_bfloat16")
-        tf.keras.mixed_precision.set_global_policy(policy)
-        # policy = tf.keras.mixed_precision.Policy("mixed_float16")
+        # policy = tf.keras.mixed_precision.Policy("mixed_bfloat16")
         # tf.keras.mixed_precision.set_global_policy(policy)
+        policy = tf.keras.mixed_precision.Policy("mixed_float16")
+        tf.keras.mixed_precision.set_global_policy(policy)
     else:
         policy = tf.keras.mixed_precision.Policy("float32")
         tf.keras.mixed_precision.set_global_policy(policy)
     augment_train = True
     repeat_train = True
-
+    shuffle = 16384
     if fold != "all":
         train_ds = get_tfrec_dataset(
             train_files,
@@ -429,7 +439,7 @@ def train_fold(config, fold, train_files, valid_files=None, strategy=STRATEGY, s
             drop_remainder=True,
             augment=augment_train,
             repeat=repeat_train,
-            shuffle=32768,
+            shuffle=shuffle,
         )
         valid_ds = get_tfrec_dataset(
             valid_files,
@@ -447,7 +457,7 @@ def train_fold(config, fold, train_files, valid_files=None, strategy=STRATEGY, s
             drop_remainder=False,
             augment=augment_train,
             repeat=repeat_train,
-            shuffle=32768,
+            shuffle=shuffle,
         )
         valid_ds = None
         valid_files = []
@@ -469,7 +479,7 @@ def train_fold(config, fold, train_files, valid_files=None, strategy=STRATEGY, s
         #    batch_size=config.batch_size,
         #
         # )
-        model = get_model2(max_len=config.max_len, output_dim=config.output_dim)
+        model = get_model(max_len=config.max_len, output_dim=config.output_dim)
 
         schedule = OneCycleLR(
             lr=config.lr,
@@ -512,8 +522,8 @@ def train_fold(config, fold, train_files, valid_files=None, strategy=STRATEGY, s
         # loss=[
         #    tf.keras.losses.CategoricalCrossentropy(from_logits=True, label_smoothing=0.1)
         # ]
-        # loss = CTCLoss1(pad_token_idx=LABEL_PAD)
-        loss = CTCLoss3
+        loss = CTCLoss(pad_token_idx=LABEL_PAD)
+        # loss = CTCLoss3
 
         model.compile(
             optimizer=opt,
@@ -523,8 +533,7 @@ def train_fold(config, fold, train_files, valid_files=None, strategy=STRATEGY, s
             #        tf.keras.metrics.CategoricalAccuracy(),
             #    ],
             # ],
-            steps_per_execution=steps_per_epoch,
-            # run_eagerly=True,
+            # steps_per_execution=10,
         )
 
     if summary:
@@ -571,7 +580,7 @@ def train_fold(config, fold, train_files, valid_files=None, strategy=STRATEGY, s
     )
 
     # Callback function to check transcription on the val set.
-    validation_callback = CallbackEval(model, valid_ds)
+    # validation_callback = CallbackEval(model, valid_ds)
     callbacks = []
     if config.save_output:
         callbacks.append(logger)
@@ -581,7 +590,7 @@ def train_fold(config, fold, train_files, valid_files=None, strategy=STRATEGY, s
         callbacks.append(sv_loss)
 
     callbacks.append(tf.keras.callbacks.TerminateOnNaN())
-    callbacks.append(validation_callback)
+    # callbacks.append(validation_callback)
 
     history = model.fit(
         train_ds,
@@ -625,6 +634,7 @@ def main():
     tf.keras.backend.clear_session()
     records_path = "/data/output/records/"
     train_filenames = glob.glob(records_path + "/*.tfrecord")
+
     # ds = get_tfrec_dataset(train_filenames, max_len=CFG.max_len, augment=True, batch_size=1024)
     # explore(ds)
     train_folds(train_filenames, folds=[0])

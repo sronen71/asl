@@ -5,24 +5,15 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import tensorflow as tf  # noqa: E402
 
 
-class CTCLoss1(tf.keras.losses.Loss):
+class CTCLoss(tf.keras.losses.Loss):
     def __init__(self, pad_token_idx):
         self.pad_token_idx = pad_token_idx
         super().__init__()
 
     def call(self, labels, logits):
-        # prediction input is logits, before softmax
         label_length = tf.reduce_sum(tf.cast(labels != self.pad_token_idx, tf.int32), axis=-1)
-        logit_length = tf.ones(tf.shape(logits)[0], dtype=tf.int32) * tf.cast(
-            tf.shape(logits)[1], dtype=tf.int32
-        )
+        logit_length = tf.ones(tf.shape(logits)[0], dtype=tf.int32) * tf.shape(logits)[1]
 
-        # labels = tf.cast(tf.keras.backend.ctc_label_dense_to_sparse(labels, label_length), tf.int64)
-
-        # tf.print(labels.shape)
-        # tf.print(label_length.shape)
-        # tf.print(logits.shape)
-        # tf.print(logit_length.shape)
         ctc_loss = tf.nn.ctc_loss(
             labels=labels,
             logits=logits,
@@ -31,45 +22,8 @@ class CTCLoss1(tf.keras.losses.Loss):
             blank_index=self.pad_token_idx,
             logits_time_major=False,
         )
-        total_loss = tf.reduce_mean(ctc_loss)
-        # tf.print(total_loss, ctc_loss)
 
-        return total_loss
-        # return tf.expand_dims(ctc_loss, 1)
-        # return tf.reduce_sum(0 * logits * logits)
-
-
-class CTCLoss2(tf.keras.losses.Loss):
-    def __init__(self, pad_token_idx):
-        self.pad_token_idx = pad_token_idx
-        super().__init__()
-
-        def call(self, y_true, y_pred):
-            # y_pred are probabilities, output of softmax
-            # Compute the training-time loss value
-            batch_len = tf.cast(tf.shape(y_true)[0], dtype="int64")
-            input_length = tf.cast(tf.shape(y_pred)[1], dtype="int64")
-            label_length = tf.cast(tf.shape(y_true)[1], dtype="int64")
-
-            input_length = input_length * tf.ones(shape=(batch_len, 1), dtype="int64")
-            label_length = label_length * tf.ones(shape=(batch_len, 1), dtype="int64")
-
-            loss = tf.keras.backend.ctc_batch_cost(y_true, y_pred, input_length, label_length)
-            return loss
-
-
-def CTCLoss3(labels, logits):
-    pad_token_idx = 59
-    label_length = tf.reduce_sum(tf.cast(labels != pad_token_idx, tf.int32), axis=-1)
-    logit_length = tf.ones(tf.shape(logits)[0], dtype=tf.int32) * tf.shape(logits)[1]
-    return tf.nn.ctc_loss(
-        labels=labels,
-        logits=logits,
-        label_length=label_length,
-        logit_length=logit_length,
-        blank_index=pad_token_idx,
-        logits_time_major=False,
-    )
+        return ctc_loss
 
 
 class ECA(tf.keras.layers.Layer):
@@ -249,7 +203,7 @@ def TransformerBlock(
     return apply
 
 
-def get_model(
+def build_model(
     max_len=64,
     dropout_step=0,
     dim=192,
@@ -298,16 +252,11 @@ def get_model(
     return tf.keras.Model(inp, outputs)
 
 
-# example use:
-# model = get_model()
-# y = model(temp_train[0])
-
-
-def get_model2(output_dim, rnn_layers=5, rnn_units=128, max_len=64):
+def build_model2(output_dim, rnn_layers=5, rnn_units=128, max_len=64):
     input_dim = CHANNELS
     """Model similar to DeepSpeech2."""
     # Model's input
-    inp = tf.keras.Input((max_len, input_dim))
+    inp = tf.keras.Input((max_len, input_dim), name="input")
     # Expand the dimension to use 2D CNN.
     x = tf.keras.layers.Reshape((-1, input_dim, 1), name="expand_dim")(inp)
     # Convolution layer 1
@@ -360,6 +309,9 @@ def get_model2(output_dim, rnn_layers=5, rnn_units=128, max_len=64):
     model = tf.keras.Model(inp, output)
     # Optimizer
     # opt = tf.keras.optimizers.Adam(learning_rate=1e-4)
-    # Compile the model and return
-    # model.compile(optimizer=opt, loss=CTCLoss3)
+    return model
+
+
+def get_model(output_dim, max_len):
+    model = build_model2(output_dim, max_len=max_len)
     return model
