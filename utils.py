@@ -1,6 +1,6 @@
 import os
 from matplotlib import pyplot as plt
-import numpy as np
+from preprocess import get_char_dict
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import tensorflow as tf  # noqa: E402
@@ -104,7 +104,8 @@ POINT_LANDMARKS = LIP + LHAND + RHAND + NOSE + REYE + LEYE
 
 
 NUM_NODES = len(POINT_LANDMARKS)
-CHANNELS = 6 * NUM_NODES
+# CHANNELS = 6 * NUM_NODES
+CHANNELS = 2 * NUM_NODES
 
 
 class OneCycleLR(tf.keras.optimizers.schedules.LearningRateSchedule):
@@ -438,23 +439,59 @@ class Snapshot(tf.keras.callbacks.Callback):
         self.model.save_weights(f"{self.save_name}-last.h5")
 
 
-# The set of characters accepted in the transcription.
-characters = [x for x in "abcdefghijklmnopqrstuvwxyz'?! "]
-# Mapping characters to integers
-char_to_num = tf.keras.layers.StringLookup(vocabulary=characters, oov_token="")
-# Mapping integers back to original characters
-num_to_char = tf.keras.layers.StringLookup(
-    vocabulary=char_to_num.get_vocabulary(), oov_token="", invert=True
-)
+char_to_num_dict = get_char_dict()
+
+num_to_char_dict = {j: i for i, j in char_to_num_dict.items()}
 
 
-def decode_batch_ctc_predictions(pred):
-    input_len = np.ones(pred.shape[0]) * pred.shape[1]
-    # Use greedy search. For complex tasks, you can use beam search
-    results = tf.keras.backend.ctc_decode(pred, input_length=input_len, greedy=True)[0][0]
-    # Iterate over the results and get back the text
+def num_to_char_fn(y):
+    return [num_to_char_dict.get(x, "") for x in y]
+
+
+@tf.function()
+def decode_phrase(pred):
+    pad_token_idx = 59
+    x = tf.argmax(pred, axis=1)
+    diff = tf.not_equal(x[:-1], x[1:])
+    adjacent_indices = tf.where(diff)[:, 0]
+    x = tf.gather(x, adjacent_indices)
+    mask = x != pad_token_idx
+    x = tf.boolean_mask(x, mask, axis=0)
+    return x
+
+
+# A utility function to decode the output of the network
+def decode_batch_predictions(pred):
     output_text = []
-    for result in results:
-        result = tf.strings.reduce_join(num_to_char(result)).numpy().decode("utf-8")
+    for result in pred:
+        result = "".join(num_to_char_fn(decode_phrase(result).numpy()))
         output_text.append(result)
     return output_text
+
+
+# A callback class to output a few transcriptions during training
+class CallbackEval(tf.keras.callbacks.Callback):
+    """Displays a batch of outputs after every epoch."""
+
+    def __init__(self, model, dataset):
+        super().__init__()
+        self.dataset = dataset
+        self.model = model
+
+    def on_epoch_end(self, epoch: int, logs=None):
+        predictions = []
+        targets = []
+        for batch in self.dataset:
+            X, y = batch
+            batch_predictions = self.model(X)
+            batch_predictions = decode_batch_predictions(batch_predictions)
+            predictions.extend(batch_predictions)
+            for label in y:
+                label = "".join(num_to_char_fn(label.numpy()))
+                targets.append(label)
+        print("-" * 100)
+        # for i in np.random.randint(0, len(predictions), 2):
+        for i in range(10):
+            print(f"Target    : {targets[i]}")
+            print(f"Prediction: {predictions[i]}, len: {len(predictions[i])}")
+            print("-" * 100)

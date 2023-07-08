@@ -9,7 +9,7 @@ import tensorflow as tf  # noqa: E402
 
 
 ROWS_PER_FRAME = 543
-input_path = "input/"
+input_path = "/data/input/"
 
 
 def _float_array_feature(value):
@@ -24,15 +24,14 @@ def get_char_dict():
     char_dict_file = f"{input_path}/character_to_prediction_index.json"
     with open(char_dict_file) as f:
         char_dict = json.load(f)
-
-    char_dict["SOS"] = 59
-    char_dict["EOS"] = 60
-    char_dict["PAD"] = 61
+    char_dict["P"] = 59
+    char_dict["SOS"] = 60
+    char_dict["EOS"] = 61
     return char_dict
 
 
 def main():
-    output_path = "output/"
+    output_path = "/data/output/"
     char_dict = get_char_dict()
     # files1 = glob.glob(input_path + "train_landmarks/*.parquet")
     files1 = []

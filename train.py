@@ -17,26 +17,31 @@ from utils import (
     LEYE,
     REYE,
     CHANNELS,
+    CallbackEval,
 )
 from visualize import visualize_train
 from utils import OneCycleLR, Snapshot, SWA, FGM, AWP
 from config import CFG
-from model import get_model, CTCLoss1
+from model import get_model, get_model2, CTCLoss1, CTCLoss3
 
 # os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import tensorflow as tf  # noqa: E402
 import tensorflow_addons as tfa  # noqa: E402
 
-tf.autograph.set_verbosity(10, alsologtostdout=True)
+
+# tf.autograph.set_verbosity(10, alsologtostdout=True)
 
 MAX_STRING_LEN = 50
 INPUT_PAD = -100.0
 char_dict = get_char_dict()
-LABEL_PAD = char_dict["PAD"]
+LABEL_PAD = char_dict["P"]
 
 
-def count_data_items(filenames):
-    return 1000 * len(filenames)
+def count_data_items(dataset):
+    dataset_size = 0
+    for _ in dataset:
+        dataset_size += 1
+    return dataset_size
 
 
 # Seed all random number generators
@@ -143,14 +148,13 @@ class Preprocess(tf.keras.layers.Layer):
         x = tf.concat(
             [
                 tf.reshape(x, (-1, length, 2 * len(self.point_landmarks))),
-                tf.reshape(dx, (-1, length, 2 * len(self.point_landmarks))),
-                tf.reshape(dx2, (-1, length, 2 * len(self.point_landmarks))),
+                # tf.reshape(dx, (-1, length, 2 * len(self.point_landmarks))),
+                # tf.reshape(dx2, (-1, length, 2 * len(self.point_landmarks))),
             ],
             axis=-1,
         )
         # x = tf.reshape(x, (-1, length, 2 * len(self.point_landmarks)))
         x = tf.where(tf.math.is_nan(x), tf.constant(0.0, x.dtype), x)
-
         return x
 
 
@@ -290,10 +294,6 @@ def augment_fn(x, always=False, max_len=None):
     return x
 
 
-def filter_nans(frames):
-    return frames[~np.isnan(frames).all(axis=(-2, -1))]
-
-
 def filter_nans_tf(x, ref_point=POINT_LANDMARKS):
     mask = tf.math.logical_not(
         tf.reduce_all(tf.math.is_nan(tf.gather(x, ref_point, axis=1)), axis=[-2, -1])
@@ -316,17 +316,22 @@ def decode_tfrec(record_bytes):
         tf.sparse.to_dense(features["coordinates"]), (-1, ROWS_PER_FRAME, 3)
     )
     out["label"] = tf.sparse.to_dense(features["label"])
-    out["sequence_id"] = features["sequence_id"][0]
+    # out["sequence_id"] = features["sequence_id"][0]
     return out
 
 
 def preprocess(x, max_len, augment=False):
     coord = x["coordinates"]
+
     coord = filter_nans_tf(coord)
+
     if augment:
         coord = augment_fn(coord, max_len=max_len)
     coord = tf.ensure_shape(coord, (None, ROWS_PER_FRAME, 3))
-    return tf.cast(Preprocess(max_len=max_len)(coord)[0], tf.float32), x["label"], x["sequence_id"]
+    return (
+        tf.cast(Preprocess(max_len=max_len)(coord)[0], tf.float32),
+        x["label"],
+    )  # x["sequence_id"]
 
 
 def get_tfrec_dataset(
@@ -360,9 +365,9 @@ def get_tfrec_dataset(
             padding_values=(
                 tf.constant(INPUT_PAD, dtype=tf.float32),
                 tf.constant(LABEL_PAD, dtype=tf.int64),
-                tf.constant(0, dtype=tf.int64),
+                # tf.constant(0, dtype=tf.int64),
             ),
-            padded_shapes=([max_len, CHANNELS], [MAX_STRING_LEN], ()),
+            padded_shapes=([max_len, CHANNELS], [MAX_STRING_LEN]),
             drop_remainder=drop_remainder,
         )
 
@@ -372,16 +377,31 @@ def get_tfrec_dataset(
 
 
 def explore(ds):
-    for feature, label, sequence_id in ds:
+    # char_dict = get_char_dict()
+    # inv_dict = {v: k for k, v in char_dict.items()}
+    counter = 0
+    for feature, label in ds:  # , sequence_id in ds:
         feature = feature.numpy()
         label = label.numpy()
-        sequence_id = sequence_id.numpy()
+        # sequence_id = sequence_id.numpy()
+        # label_str = "".join([inv_dict[x] for x in label[0, :].tolist()])
+        # print(
+        #    counter,
+        #    len(sequence_id),
+        #    feature.shape,
+        #    label.shape,
+        #    np.min(feature),
+        #    np.max(feature),
+        #    label_str,
+        # )
+        counter += 1
         # print(sequence_id, feature.shape, label.shape)
         for i in range(3):
             N = feature.shape[-1]
             coordinates = feature[i, :].reshape(-1, N // 6, 6)
             coordinates = coordinates[:, :, :2]
-            visualize_train(sequence_id[i], coordinates, label[i, :])
+            # visualize_train(sequence_id[i], coordinates, label[i, :])
+            visualize_train("", coordinates, label[i, :])
 
 
 def train_fold(config, fold, train_files, valid_files=None, strategy=STRATEGY, summary=True):
@@ -398,6 +418,8 @@ def train_fold(config, fold, train_files, valid_files=None, strategy=STRATEGY, s
     else:
         policy = tf.keras.mixed_precision.Policy("float32")
         tf.keras.mixed_precision.set_global_policy(policy)
+    augment_train = True
+    repeat_train = True
 
     if fold != "all":
         train_ds = get_tfrec_dataset(
@@ -405,8 +427,8 @@ def train_fold(config, fold, train_files, valid_files=None, strategy=STRATEGY, s
             max_len=config.max_len,
             batch_size=config.batch_size,
             drop_remainder=True,
-            augment=True,
-            repeat=True,
+            augment=augment_train,
+            repeat=repeat_train,
             shuffle=32768,
         )
         valid_ds = get_tfrec_dataset(
@@ -423,25 +445,31 @@ def train_fold(config, fold, train_files, valid_files=None, strategy=STRATEGY, s
             batch_size=config.batch_size,
             max_len=config.max_len,
             drop_remainder=False,
-            augment=True,
-            repeat=True,
+            augment=augment_train,
+            repeat=repeat_train,
             shuffle=32768,
         )
         valid_ds = None
         valid_files = []
 
-    num_train = count_data_items(train_files)
-    num_valid = count_data_items(valid_files)
+    # num_train = count_data_items(train_ds)
+    # num_valid = count_data_items(valid_ds)
+    num_train = 1716 * 32
+    num_valid = 383 * 32
     steps_per_epoch = num_train // config.batch_size
+    valid_steps = num_valid // config.batch_size
     with strategy.scope():
         dropout_step = config.dropout_start_epoch * steps_per_epoch
-        model = get_model(
-            max_len=config.max_len,
-            dropout_step=dropout_step,
-            dim=config.dim,
-            input_pad=INPUT_PAD,
-            output_dim=config.output_dim,
-        )
+        # model = get_model(
+        #    max_len=config.max_len,
+        #    dropout_step=dropout_step,
+        #    dim=config.dim,
+        #    input_pad=INPUT_PAD,
+        #    output_dim=config.output_dim,
+        #    batch_size=config.batch_size,
+        #
+        # )
+        model = get_model2(max_len=config.max_len, output_dim=config.output_dim)
 
         schedule = OneCycleLR(
             lr=config.lr,
@@ -484,16 +512,17 @@ def train_fold(config, fold, train_files, valid_files=None, strategy=STRATEGY, s
         # loss=[
         #    tf.keras.losses.CategoricalCrossentropy(from_logits=True, label_smoothing=0.1)
         # ]
-        loss = CTCLoss1(pad_token_idx=LABEL_PAD)
+        # loss = CTCLoss1(pad_token_idx=LABEL_PAD)
+        loss = CTCLoss3
 
         model.compile(
             optimizer=opt,
             loss=loss,
-            metrics=[
-                [
-                    tf.keras.metrics.CategoricalAccuracy(),
-                ],
-            ],
+            # metrics=[
+            #    [
+            #        tf.keras.metrics.CategoricalAccuracy(),
+            #    ],
+            # ],
             steps_per_execution=steps_per_epoch,
             # run_eagerly=True,
         )
@@ -524,7 +553,7 @@ def train_fold(config, fold, train_files, valid_files=None, strategy=STRATEGY, s
     sv_loss = tf.keras.callbacks.ModelCheckpoint(
         f"{config.output_dir}/{config.comment}-fold{fold}-best.h5",
         monitor="val_loss",
-        verbose=0,
+        verbose=1,
         save_best_only=True,
         save_weights_only=True,
         mode="min",
@@ -538,15 +567,21 @@ def train_fold(config, fold, train_files, valid_files=None, strategy=STRATEGY, s
         strategy=strategy,
         train_ds=train_ds,
         valid_ds=valid_ds,
-        valid_steps=(num_valid // config.batch_size),
+        valid_steps=valid_steps,
     )
+
+    # Callback function to check transcription on the val set.
+    validation_callback = CallbackEval(model, valid_ds)
     callbacks = []
     if config.save_output:
         callbacks.append(logger)
         callbacks.append(snap)
         # callbacks.append(swa)
-        if fold != "all":
-            callbacks.append(sv_loss)
+        # if fold != "all":
+        callbacks.append(sv_loss)
+
+    callbacks.append(tf.keras.callbacks.TerminateOnNaN())
+    callbacks.append(validation_callback)
 
     history = model.fit(
         train_ds,
@@ -555,15 +590,17 @@ def train_fold(config, fold, train_files, valid_files=None, strategy=STRATEGY, s
         callbacks=callbacks,
         validation_data=valid_ds,
         verbose=config.verbose,
-        validation_steps=(num_valid // config.batch_size),
+        validation_steps=valid_steps,
     )
 
     if config.save_output:  # reload the saved best weights checkpoint
-        model.load_weights(f"{config.output_dir}/{config.comment}-fold{fold}-best.h5")
+        saved_based_model = f"{config.output_dir}/{config.comment}-fold{fold}-best.h5"
+        if os.path.exists(saved_based_model):
+            model.load_weights(saved_based_model)
+        else:
+            print(f"Warning: could not find {saved_based_model}")
     if fold != "all":
-        cv = model.evaluate(
-            valid_ds, verbose=config.verbose, steps=(num_valid // config.batch_size)
-        )
+        cv = model.evaluate(valid_ds, verbose=config.verbose, steps=valid_steps)
     else:
         cv = None
 
@@ -574,8 +611,8 @@ def train_folds(train_filenames, folds, config=CFG, strategy=STRATEGY, summary=T
     for fold in folds:
         if fold != "all":
             all_files = train_filenames
-            train_files = [x for x in all_files if f"fold{fold}" not in x]
-            valid_files = [x for x in all_files if f"fold{fold}" in x]
+            train_files = [x for x in all_files if f"fold_{fold}" not in x]
+            valid_files = [x for x in all_files if f"fold_{fold}" in x]
         else:
             train_files = train_filenames
             valid_files = None
@@ -585,14 +622,12 @@ def train_folds(train_filenames, folds, config=CFG, strategy=STRATEGY, summary=T
 
 
 def main():
-    records_path = "output/records/"
-    train_filenames = glob.glob(records_path + "/*.tfrecord")[:1]
-    print(train_filenames)
-    # augment = True
-    # ds = get_tfrec_dataset(train_file_names, augment=augment, batch_size=1024)
+    tf.keras.backend.clear_session()
+    records_path = "/data/output/records/"
+    train_filenames = glob.glob(records_path + "/*.tfrecord")
+    # ds = get_tfrec_dataset(train_filenames, max_len=CFG.max_len, augment=True, batch_size=1024)
     # explore(ds)
-    # train_fold(train_filenames, [0])
-    train_folds(train_filenames, folds=["all"])
+    train_folds(train_filenames, folds=[0])
 
 
 if __name__ == "__main__":

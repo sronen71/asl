@@ -8,16 +8,16 @@ class CFG:
     output_dir = "output"
 
     seed = 42
-    verbose = 2  # 0) silent 1) progress bar 2) one line per epoch
+    verbose = 1  # 0) silent 1) progress bar 2) one line per epoch
 
-    max_len = 400
+    max_len = 128  # max number of frames
     replicas = 1
-    lr = 5e-4 * replicas
+    lr = 1e-4 * replicas  # 5e-4
     weight_decay = 0.1
     lr_min = 1e-6
-    epoch = 1  # 400
+    epoch = 50  # 400
     warmup = 0  # 0.1
-    batch_size = 8 * replicas  # 64*
+    batch_size = 32 * replicas  # 64*
     snapshot_epochs: List[int] = []
     swa_epochs: List[int] = []  # list(range(epoch//2,epoch+1))
 

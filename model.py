@@ -12,14 +12,18 @@ class CTCLoss1(tf.keras.losses.Loss):
 
     def call(self, labels, logits):
         # prediction input is logits, before softmax
-        label_length = tf.reduce_sum(tf.cast(labels != self.pad_token_idx, tf.int64), axis=-1)
-        logit_length = tf.ones(tf.shape(logits)[0], dtype=tf.int64) * tf.cast(
-            tf.shape(logits)[1], dtype=tf.int64
+        label_length = tf.reduce_sum(tf.cast(labels != self.pad_token_idx, tf.int32), axis=-1)
+        logit_length = tf.ones(tf.shape(logits)[0], dtype=tf.int32) * tf.cast(
+            tf.shape(logits)[1], dtype=tf.int32
         )
-        tf.print(labels.shape)
-        tf.print(logits.shape)
-        return tf.reduce_sum(logits * logits)
-        return tf.nn.ctc_loss(
+
+        # labels = tf.cast(tf.keras.backend.ctc_label_dense_to_sparse(labels, label_length), tf.int64)
+
+        # tf.print(labels.shape)
+        # tf.print(label_length.shape)
+        # tf.print(logits.shape)
+        # tf.print(logit_length.shape)
+        ctc_loss = tf.nn.ctc_loss(
             labels=labels,
             logits=logits,
             label_length=label_length,
@@ -27,6 +31,12 @@ class CTCLoss1(tf.keras.losses.Loss):
             blank_index=self.pad_token_idx,
             logits_time_major=False,
         )
+        total_loss = tf.reduce_mean(ctc_loss)
+        # tf.print(total_loss, ctc_loss)
+
+        return total_loss
+        # return tf.expand_dims(ctc_loss, 1)
+        # return tf.reduce_sum(0 * logits * logits)
 
 
 class CTCLoss2(tf.keras.losses.Loss):
@@ -46,6 +56,20 @@ class CTCLoss2(tf.keras.losses.Loss):
 
             loss = tf.keras.backend.ctc_batch_cost(y_true, y_pred, input_length, label_length)
             return loss
+
+
+def CTCLoss3(labels, logits):
+    pad_token_idx = 59
+    label_length = tf.reduce_sum(tf.cast(labels != pad_token_idx, tf.int32), axis=-1)
+    logit_length = tf.ones(tf.shape(logits)[0], dtype=tf.int32) * tf.shape(logits)[1]
+    return tf.nn.ctc_loss(
+        labels=labels,
+        logits=logits,
+        label_length=label_length,
+        logit_length=logit_length,
+        blank_index=pad_token_idx,
+        logits_time_major=False,
+    )
 
 
 class ECA(tf.keras.layers.Layer):
@@ -101,7 +125,7 @@ class CausalDWConv1D(tf.keras.layers.Layer):
         use_bias=False,
         depthwise_initializer="glorot_uniform",
         name="",
-        **kwargs
+        **kwargs,
     ):
         super().__init__(name=name, **kwargs)
         self.causal_pad = tf.keras.layers.ZeroPadding1D(
@@ -233,8 +257,9 @@ def get_model(
     input_pad=-100,
     with_transformer=False,
     drop_rate=0.2,
+    batch_size=8,
 ):
-    inp = tf.keras.Input((max_len, CHANNELS))
+    inp = tf.keras.Input((max_len, CHANNELS), batch_size=batch_size)
     x = tf.keras.layers.Masking(mask_value=input_pad, input_shape=(max_len, CHANNELS))(inp)
     ksize = 17
     x = tf.keras.layers.Dense(dim, use_bias=False, name="stem_conv")(x)
@@ -269,10 +294,72 @@ def get_model(
     # x = tf.keras.layers.GlobalAveragePooling1D()(x)
     # x = LateDropout(0.8, start_step=dropout_step)(x)
 
-    x = tf.keras.layers.Dense(output_dim, name="classifier")(x)  # logits
-    return tf.keras.Model(inp, x)
+    outputs = tf.keras.layers.Dense(output_dim, activation="log_softmax")(x)  # logits
+    return tf.keras.Model(inp, outputs)
 
 
 # example use:
 # model = get_model()
 # y = model(temp_train[0])
+
+
+def get_model2(output_dim, rnn_layers=5, rnn_units=128, max_len=64):
+    input_dim = CHANNELS
+    """Model similar to DeepSpeech2."""
+    # Model's input
+    inp = tf.keras.Input((max_len, input_dim))
+    # Expand the dimension to use 2D CNN.
+    x = tf.keras.layers.Reshape((-1, input_dim, 1), name="expand_dim")(inp)
+    # Convolution layer 1
+    x = tf.keras.layers.Conv2D(
+        filters=32,
+        kernel_size=[11, 41],
+        strides=[2, 2],
+        padding="same",
+        use_bias=False,
+        name="conv_1",
+    )(x)
+    x = tf.keras.layers.BatchNormalization(name="conv_1_bn")(x)
+    x = tf.keras.layers.ReLU(name="conv_1_relu")(x)
+    # Convolution layer 2
+    x = tf.keras.layers.Conv2D(
+        filters=32,
+        kernel_size=[11, 21],
+        strides=[1, 2],
+        padding="same",
+        use_bias=False,
+        name="conv_2",
+    )(x)
+    x = tf.keras.layers.BatchNormalization(name="conv_2_bn")(x)
+    x = tf.keras.layers.ReLU(name="conv_2_relu")(x)
+    # Reshape the resulted volume to feed the RNNs layers
+    x = tf.keras.layers.Reshape((-1, x.shape[-2] * x.shape[-1]))(x)
+    # RNN layers
+    for i in range(1, rnn_layers + 1):
+        recurrent = tf.keras.layers.GRU(
+            units=rnn_units,
+            activation="tanh",
+            recurrent_activation="sigmoid",
+            use_bias=True,
+            return_sequences=True,
+            reset_after=True,
+            name=f"gru_{i}",
+        )
+        x = tf.keras.layers.Bidirectional(
+            recurrent, name=f"bidirectional_{i}", merge_mode="concat"
+        )(x)
+        if i < rnn_layers:
+            x = tf.keras.layers.Dropout(rate=0.5)(x)
+    # Dense layer
+    x = tf.keras.layers.Dense(units=rnn_units * 2, name="dense_1")(x)
+    x = tf.keras.layers.ReLU(name="dense_1_relu")(x)
+    x = tf.keras.layers.Dropout(rate=0.5)(x)
+    # Classification layer
+    output = tf.keras.layers.Dense(units=output_dim, activation="log_softmax")(x)
+    # Model
+    model = tf.keras.Model(inp, output)
+    # Optimizer
+    # opt = tf.keras.optimizers.Adam(learning_rate=1e-4)
+    # Compile the model and return
+    # model.compile(optimizer=opt, loss=CTCLoss3)
+    return model
