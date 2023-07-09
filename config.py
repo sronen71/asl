@@ -31,6 +31,7 @@ class CFG:
     dropout_start_epoch = 15
     resume = 0
     decay_type = "cosine"
-    dim = 192
+    # dim = 192
+    dim = 384
     comment = f"model-{dim}-seed{seed}"
     output_dim = 61

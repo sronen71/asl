@@ -134,7 +134,7 @@ def Conv1DBlock(
             kernel_size, dilation_rate=dilation_rate, use_bias=False, name=name + "_dwconv"
         )(x)
 
-        x = tf.keras.layers.BatchNormalization(momentum=0.95, name=name + "_bn")(x)
+        x = tf.keras.layers.LayerNormalization(name=name + "_bn")(x)
 
         x = ECA()(x)  # efficient channel attention
 
@@ -187,13 +187,13 @@ def TransformerBlock(
 ):
     def apply(inputs):
         x = inputs
-        x = tf.keras.layers.BatchNormalization(momentum=0.95)(x)
+        x = tf.keras.layers.LayerNormalization(momentum=0.95)(x)
         x = MultiHeadSelfAttention(dim=dim, num_heads=num_heads, dropout=attn_dropout)(x)
         x = tf.keras.layers.Dropout(drop_rate, noise_shape=(None, 1, 1))(x)
         x = tf.keras.layers.Add()([inputs, x])
         attn_out = x
 
-        x = tf.keras.layers.BatchNormalization(momentum=0.95)(x)
+        x = tf.keras.layers.LayerNormalization(momentum=0.95)(x)
         x = tf.keras.layers.Dense(dim * expand, use_bias=False, activation=activation)(x)
         x = tf.keras.layers.Dense(dim, use_bias=False)(x)
         x = tf.keras.layers.Dropout(drop_rate, noise_shape=(None, 1, 1))(x)
@@ -204,20 +204,19 @@ def TransformerBlock(
 
 
 def build_model(
+    output_dim,
     max_len=64,
     dropout_step=0,
     dim=192,
-    output_dim=50,
     input_pad=-100,
     with_transformer=False,
     drop_rate=0.2,
-    batch_size=8,
 ):
-    inp = tf.keras.Input((max_len, CHANNELS), batch_size=batch_size)
+    inp = tf.keras.Input((max_len, CHANNELS))
     x = tf.keras.layers.Masking(mask_value=input_pad, input_shape=(max_len, CHANNELS))(inp)
     ksize = 17
     x = tf.keras.layers.Dense(dim, use_bias=False, name="stem_conv")(x)
-    x = tf.keras.layers.BatchNormalization(momentum=0.95, name="stem_bn")(x)
+    x = tf.keras.layers.LayerNormalization(name="stem_bn")(x)
 
     x = Conv1DBlock(dim, ksize, drop_rate=drop_rate)(x)
     x = Conv1DBlock(dim, ksize, drop_rate=drop_rate)(x)
@@ -225,6 +224,7 @@ def build_model(
     if with_transformer:
         x = TransformerBlock(dim, expand=2)(x)
 
+    x = tf.keras.layers.AvgPool1D(2, 2)(x)
     x = Conv1DBlock(dim, ksize, drop_rate=drop_rate)(x)
     x = Conv1DBlock(dim, ksize, drop_rate=drop_rate)(x)
     x = Conv1DBlock(dim, ksize, drop_rate=drop_rate)(x)
@@ -244,12 +244,13 @@ def build_model(
         if with_transformer:
             x = TransformerBlock(dim, expand=2)(x)
 
-    # x = tf.keras.layers.Dense(dim * 2, name="top_conv")(x)
-    # x = tf.keras.layers.GlobalAveragePooling1D()(x)
+    lstm = tf.keras.layers.LSTM(units=output_dim, return_sequences=True)
+    x = tf.keras.layers.Bidirectional(lstm)(x)
     # x = LateDropout(0.8, start_step=dropout_step)(x)
 
     outputs = tf.keras.layers.Dense(output_dim, activation="log_softmax")(x)  # logits
-    return tf.keras.Model(inp, outputs)
+    model = tf.keras.Model(inp, outputs)
+    return model
 
 
 def build_model2(output_dim, rnn_layers=5, rnn_units=128, max_len=64):
@@ -268,7 +269,7 @@ def build_model2(output_dim, rnn_layers=5, rnn_units=128, max_len=64):
         use_bias=False,
         name="conv_1",
     )(x)
-    x = tf.keras.layers.BatchNormalization(name="conv_1_bn")(x)
+    x = tf.keras.layers.LayerNormalization(name="conv_1_bn")(x)
     x = tf.keras.layers.ReLU(name="conv_1_relu")(x)
     # Convolution layer 2
     x = tf.keras.layers.Conv2D(
@@ -279,7 +280,7 @@ def build_model2(output_dim, rnn_layers=5, rnn_units=128, max_len=64):
         use_bias=False,
         name="conv_2",
     )(x)
-    x = tf.keras.layers.BatchNormalization(name="conv_2_bn")(x)
+    x = tf.keras.layers.LayerNormalization(name="conv_2_bn")(x)
     x = tf.keras.layers.ReLU(name="conv_2_relu")(x)
     # Reshape the resulted volume to feed the RNNs layers
     x = tf.keras.layers.Reshape((-1, x.shape[-2] * x.shape[-1]))(x)
@@ -312,6 +313,7 @@ def build_model2(output_dim, rnn_layers=5, rnn_units=128, max_len=64):
     return model
 
 
-def get_model(output_dim, max_len):
-    model = build_model2(output_dim, max_len=max_len)
+def get_model(output_dim, max_len, dim, input_pad):
+    # model = build_model2(output_dim, max_len=max_len)
+    model = build_model(output_dim, max_len=max_len, input_pad=input_pad, dim=dim)
     return model

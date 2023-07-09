@@ -280,13 +280,13 @@ def spatial_mask(x, size=(0.1, 0.3), mask_value=float("nan")):
 
 
 def augment_fn(x, always=False, max_len=None):
-    if tf.random.uniform(()) < 0.5 or always:
+    if tf.random.uniform(()) < 0.4 or always:
         x = resample(x, (0.5, 1.5))
-    if tf.random.uniform(()) < 0.5 or always:
+    if tf.random.uniform(()) < 0.4 or always:
         x = flip_lr(x)
     # if max_len is not None:
     #    x = temporal_crop(x, max_len)
-    if tf.random.uniform(()) < 0.5 or always:
+    if tf.random.uniform(()) < 0.4 or always:
         x = spatial_random_affine(x)
     if tf.random.uniform(()) < 0.2 or always:
         x = temporal_mask(x)
@@ -437,9 +437,6 @@ def train_fold(config, fold, train_files, valid_files=None, strategy=STRATEGY, s
             valid_files,
             batch_size=config.batch_size,
             max_len=config.max_len,
-            drop_remainder=False,
-            repeat=False,
-            shuffle=False,
         )
     else:
         train_ds = get_tfrec_dataset(
@@ -468,10 +465,14 @@ def train_fold(config, fold, train_files, valid_files=None, strategy=STRATEGY, s
         #    dim=config.dim,
         #    input_pad=INPUT_PAD,
         #    output_dim=config.output_dim,
-        #    batch_size=config.batch_size,
         #
         # )
-        model = get_model(max_len=config.max_len, output_dim=config.output_dim)
+        model = get_model(
+            max_len=config.max_len,
+            output_dim=config.output_dim,
+            input_pad=INPUT_PAD,
+            dim=config.dim,
+        )
 
         schedule = OneCycleLR(
             lr=config.lr,
@@ -548,8 +549,11 @@ def train_fold(config, fold, train_files, valid_files=None, strategy=STRATEGY, s
         if valid_ds is not None:
             model.evaluate(valid_ds)
 
-    logger = tf.keras.callbacks.CSVLogger(
-        f"{config.output_dir}/{config.comment}-fold{fold}-logs.csv"
+    # logger = tf.keras.callbacks.CSVLogger(
+    #    f"{config.output_dir}/{config.comment}-fold{fold}-logs.csv"
+    # )
+    logger = tf.keras.callbacks.TensorBoard(
+        log_dir="config.output_dir", histogram_freq=0, write_graph=True, write_images=True
     )
     sv_loss = tf.keras.callbacks.ModelCheckpoint(
         f"{config.output_dir}/{config.comment}-fold{fold}-best.h5",
