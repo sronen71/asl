@@ -1,6 +1,6 @@
 import os
 from matplotlib import pyplot as plt
-from preprocess import get_char_dict
+from asl.asl.preprocess import get_char_dict
 import numpy as np
 from Levenshtein import distance as Lev_distance
 
