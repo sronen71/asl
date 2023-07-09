@@ -1,7 +1,7 @@
-.holistic*
+asl/.holistic*
 .vscode/
-Chicago*/
-__pycache__/
-input/
-output/
-config.output_dir/
+asl/Chicago*/
+asl/__pycache__/
+asl/input/
+asl/output/
+asl/config.output_dir/
