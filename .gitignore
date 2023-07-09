@@ -4,3 +4,4 @@ Chicago*/
 __pycache__/
 input/
 output/
+config.output_dir/
