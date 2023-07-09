@@ -1,8 +1,5 @@
-import os
-from utils import Constants
-
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-import tensorflow as tf  # noqa: E402
+from .utils import Constants
+import tensorflow as tf
 
 
 class CTCLoss(tf.keras.losses.Loss):

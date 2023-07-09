@@ -1,11 +1,9 @@
 import cv2
 import pandas as pd
 import glob
-import os
 from protobuf_to_dict import protobuf_to_dict  # pip install protobuf3-to-dict
 import random
 
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import mediapipe as mp  # noqa: E402
 
 mp_drawing = mp.solutions.drawing_utils
@@ -125,7 +123,7 @@ def process_results(sequence_results, sequence_id):
     return df_seq
 
 
-def main():
+def run_holistic():
     path1 = "ChicagoFSWild"
     path2 = "ChicagoFSWildPlus"
     if "chicago.csv" in glob.glob("*.csv"):
@@ -180,7 +178,3 @@ def main():
             df_csv = pd.concat((df_done, df_csv), axis=0)
             df_csv.to_csv("chicago.csv", index=False)
         count += 1
-
-
-if __name__ == "__main__":
-    main()

@@ -1,6 +1,6 @@
 import os
 from matplotlib import pyplot as plt
-import preprocess as pre
+from .preprocessing import get_char_dict
 import numpy as np
 from Levenshtein import distance as Lev_distance
 
@@ -9,7 +9,11 @@ import tensorflow as tf  # noqa: E402
 
 
 class Constants:
-    char_dict = pre.get_char_dict()
+    ROWS_PER_FRAME = 543
+    MAX_STRING_LEN = 50
+    INPUT_PAD = -100.0
+    char_dict = get_char_dict()
+    LABEL_PAD = char_dict["P"]
     inv_dict = {v: k for k, v in char_dict.items()}
     NOSE = [1, 2, 98, 327]
     LIP = [

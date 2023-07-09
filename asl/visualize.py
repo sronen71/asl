@@ -1,8 +1,5 @@
-from preprocess import get_char_dict
+from .utils import Constants
 import plotly.graph_objects as go
-
-char_dict = get_char_dict()
-inv_dict = {v: k for k, v in char_dict.items()}
 
 
 def visualise2d_landmarks(coordinates, title):
@@ -44,7 +41,7 @@ def visualise2d_landmarks(coordinates, title):
 
 
 def visualize_train(sequence_id, coordinates, label_code):
-    label = [inv_dict[x] for x in label_code]
+    label = [Constants.inv_dict[x] for x in label_code]
     label = [x for x in label if len(x) == 1]
     label = "".join(label)
     title = f"sequence {sequence_id} {label}"
