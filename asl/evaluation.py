@@ -12,7 +12,7 @@ def eval_folds(eval_filenames, fold=0):
     model = get_model(
         max_len=CFG.max_len, output_dim=CFG.output_dim, dim=CFG.dim, input_pad=Constants.INPUT_PAD
     )
-    saved_based_model = f"{config.output_dir}/{config.comment}-fold{fold}-best.h5"
+    saved_based_model = f"{config.log_path}/{config.comment}-fold{fold}-best.h5"
     model.load_weights(saved_based_model)
     lev = metric(ds, model)
     print(lev)
@@ -20,7 +20,7 @@ def eval_folds(eval_filenames, fold=0):
 
 def eval():
     tf.keras.backend.clear_session()
-    records_path = "/data/output/records/"
+    records_path = CFG.output_path + "/records/"
     filenames = glob.glob(records_path + "/*.tfrecord")
     eval_filenames = [x for x in filenames if "fold_0" in x]
     # print(eval_filenames)

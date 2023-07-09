@@ -526,20 +526,20 @@ def train_fold(config, fold, train_files, valid_files=None, strategy=STRATEGY, s
 
     if config.resume:
         print(f"resume from epoch{config.resume}")
-        model.load_weights(f"{config.output_dir}/{config.comment}-fold{fold}-last.h5")
+        model.load_weights(f"{config.log_path}/{config.comment}-fold{fold}-last.h5")
         if train_ds is not None:
             model.evaluate(train_ds.take(steps_per_epoch))
         if valid_ds is not None:
             model.evaluate(valid_ds)
 
-    # logger = tf.keras.callbacks.CSVLogger(
-    #    f"{config.output_dir}/{config.comment}-fold{fold}-logs.csv"
-    # )
-    logger = tf.keras.callbacks.TensorBoard(
-        log_dir="config.output_dir", histogram_freq=0, write_graph=True, write_images=True
+    csv_logger = tf.keras.callbacks.CSVLogger(
+        f"{config.log_path}/{config.comment}-fold{fold}-logs.csv"
+    )
+    tb_logger = tf.keras.callbacks.TensorBoard(
+        log_dir="config.log_path", histogram_freq=0, write_graph=True, write_images=True
     )
     sv_loss = tf.keras.callbacks.ModelCheckpoint(
-        f"{config.output_dir}/{config.comment}-fold{fold}-best.h5",
+        f"{config.log_path}/{config.comment}-fold{fold}-best.h5",
         monitor="val_loss",
         verbose=1,
         save_best_only=True,
@@ -547,10 +547,10 @@ def train_fold(config, fold, train_files, valid_files=None, strategy=STRATEGY, s
         mode="min",
         save_freq="epoch",
     )
-    snap = Snapshot(f"{config.output_dir}/{config.comment}-fold{fold}", config.snapshot_epochs)
+    snap = Snapshot(f"{config.log_path}/{config.comment}-fold{fold}", config.snapshot_epochs)
     # stochastic weight averaging
     swa = SWA(
-        f"{config.output_dir}/{config.comment}-fold{fold}",
+        f"{config.log_path}/{config.comment}-fold{fold}",
         config.swa_epochs,
         strategy=strategy,
         train_ds=train_ds,
@@ -562,7 +562,8 @@ def train_fold(config, fold, train_files, valid_files=None, strategy=STRATEGY, s
     # validation_callback = CallbackEval(model, valid_ds)
     callbacks = []
     if config.save_output:
-        callbacks.append(logger)
+        callbacks.append(csv_logger)
+        callbacks.append(tb_logger)
         callbacks.append(snap)
         # callbacks.append(swa)
         # if fold != "all":
@@ -582,7 +583,7 @@ def train_fold(config, fold, train_files, valid_files=None, strategy=STRATEGY, s
     )
 
     if config.save_output:  # reload the saved best weights checkpoint
-        saved_based_model = f"{config.output_dir}/{config.comment}-fold{fold}-best.h5"
+        saved_based_model = f"{config.log_path}/{config.comment}-fold{fold}-best.h5"
         if os.path.exists(saved_based_model):
             model.load_weights(saved_based_model)
         else:
@@ -611,7 +612,7 @@ def train_folds(train_filenames, folds, config=CFG, strategy=STRATEGY, summary=T
 
 def train():
     tf.keras.backend.clear_session()
-    records_path = "/data/output/records/"
+    records_path = CFG.output_path + "/records/"
     train_filenames = glob.glob(records_path + "/*.tfrecord")
 
     # ds = get_tfrec_dataset(train_filenames, max_len=CFG.max_len, augment=True, batch_size=1024)

@@ -1,11 +1,22 @@
 import os
 from matplotlib import pyplot as plt
-from .preprocessing import get_char_dict
 import numpy as np
 from Levenshtein import distance as Lev_distance
+from config import CFG
+import json
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import tensorflow as tf  # noqa: E402
+
+
+def get_char_dict():
+    char_dict_file = f"{CFG.input_path}/character_to_prediction_index.json"
+    with open(char_dict_file) as f:
+        char_dict = json.load(f)
+    char_dict["P"] = 59
+    char_dict["SOS"] = 60
+    char_dict["EOS"] = 61
+    return char_dict
 
 
 class Constants:

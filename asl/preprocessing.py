@@ -1,13 +1,10 @@
-import json
 import glob
 import pandas as pd
 import os
 import numpy as np
 import tensorflow as tf
-from .utils import Constants
-
-
-input_path = "/data/input/"
+from .utils import Constants, get_char_dict
+from .config import CFG
 
 
 def _float_array_feature(value):
@@ -18,26 +15,15 @@ def _int_array_feature(value):
     return tf.train.Feature(int64_list=tf.train.Int64List(value=value))
 
 
-def get_char_dict():
-    char_dict_file = f"{input_path}/character_to_prediction_index.json"
-    with open(char_dict_file) as f:
-        char_dict = json.load(f)
-    char_dict["P"] = 59
-    char_dict["SOS"] = 60
-    char_dict["EOS"] = 61
-    return char_dict
-
-
-def preprocess():
-    output_path = "/data/output/"
+def preprocess(output_path=CFG.output_path):
     char_dict = get_char_dict()
     # files1 = glob.glob(input_path + "train_landmarks/*.parquet")
     files1 = []
-    files2 = glob.glob(input_path + "supplemental_landmarks/*.parquet")
+    files2 = glob.glob(CFG.input_path + "supplemental_landmarks/*.parquet")
     files = files1 + files2
 
-    dtrain1 = pd.read_csv(input_path + "train.csv")
-    dtrain2 = pd.read_csv(input_path + "supplemental_metadata.csv")
+    dtrain1 = pd.read_csv(CFG.input_path + "train.csv")
+    dtrain2 = pd.read_csv(CFG.input_path + "supplemental_metadata.csv")
     dtrain = pd.concat([dtrain1, dtrain2])
     # print(dtrain[["file_id", "sequence_id", "participant_id"]].sort_values(by=["participant_id"]))
     # MAX_STRING_LEN = 43

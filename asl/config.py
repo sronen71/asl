@@ -4,8 +4,9 @@ from typing import List
 class CFG:
     n_splits = 5
     save_output = True
-    # output_dir = "/kaggle/working"
-    output_dir = "output"
+    log_path = "output"
+    input_path = "/kaggle/input/"
+    output_path = "/kaggle/working/"
 
     seed = 42
     verbose = 1  # 0) silent 1) progress bar 2) one line per epoch
