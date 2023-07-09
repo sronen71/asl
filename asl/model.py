@@ -1,5 +1,5 @@
 import os
-from utils import CHANNELS
+from utils import Constants
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import tensorflow as tf  # noqa: E402
@@ -212,8 +212,10 @@ def build_model(
     with_transformer=False,
     drop_rate=0.2,
 ):
-    inp = tf.keras.Input((max_len, CHANNELS))
-    x = tf.keras.layers.Masking(mask_value=input_pad, input_shape=(max_len, CHANNELS))(inp)
+    inp = tf.keras.Input((max_len, Constants.CHANNELS))
+    x = tf.keras.layers.Masking(mask_value=input_pad, input_shape=(max_len, Constants.CHANNELS))(
+        inp
+    )
     ksize = 17
     x = tf.keras.layers.Dense(dim, use_bias=False, name="stem_conv")(x)
     x = tf.keras.layers.LayerNormalization(name="stem_bn")(x)
@@ -254,7 +256,7 @@ def build_model(
 
 
 def build_model2(output_dim, rnn_layers=5, rnn_units=128, max_len=64):
-    input_dim = CHANNELS
+    input_dim = Constants.CHANNELS
     """Model similar to DeepSpeech2."""
     # Model's input
     inp = tf.keras.Input((max_len, input_dim), name="input")

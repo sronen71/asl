@@ -8,7 +8,6 @@ import random
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import mediapipe as mp  # noqa: E402
 
-
 mp_drawing = mp.solutions.drawing_utils
 mp_drawing_styles = mp.solutions.drawing_styles
 mp_holistic = mp.solutions.holistic

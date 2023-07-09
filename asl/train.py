@@ -4,21 +4,7 @@ import numpy as np
 import glob
 import random
 from preprocess import ROWS_PER_FRAME, get_char_dict
-from utils import (
-    POINT_LANDMARKS,
-    LNOSE,
-    RNOSE,
-    LHAND,
-    RHAND,
-    LLIP,
-    RLIP,
-    LPOSE,
-    RPOSE,
-    LEYE,
-    REYE,
-    CHANNELS,
-    # CallbackEval,
-)
+from utils import Constants
 from visualize import visualize_train
 from utils import OneCycleLR, Snapshot, SWA, FGM, AWP
 from config import CFG
@@ -112,10 +98,10 @@ def tf_nan_std(x, center=None, axis=0, keepdims=False):
 
 
 class Preprocess(tf.keras.layers.Layer):
-    def __init__(self, max_len, point_landmarks=POINT_LANDMARKS, **kwargs):
+    def __init__(self, max_len, landmarks=Constants.POINT_LANDMARKS, **kwargs):
         super().__init__(**kwargs)
         self.max_len = max_len
-        self.point_landmarks = point_landmarks
+        self.landmarks = Constants.POINT_LANDMARKS
 
     def call(self, inputs):
         if tf.rank(inputs) == 3:
@@ -125,7 +111,7 @@ class Preprocess(tf.keras.layers.Layer):
 
         mean = tf_nan_mean(tf.gather(x, [17], axis=2), axis=[1, 2], keepdims=True)
         mean = tf.where(tf.math.is_nan(mean), tf.constant(0.5, x.dtype), mean)
-        x = tf.gather(x, self.point_landmarks, axis=2)  # N,T,P,C
+        x = tf.gather(x, self.landmarks, axis=2)  # N,T,P,C
         std = tf_nan_std(x, center=mean, axis=[1, 2], keepdims=True)
 
         x = (x - mean) / std
@@ -147,13 +133,13 @@ class Preprocess(tf.keras.layers.Layer):
         )
         x = tf.concat(
             [
-                tf.reshape(x, (-1, length, 2 * len(self.point_landmarks))),
-                tf.reshape(dx, (-1, length, 2 * len(self.point_landmarks))),
-                tf.reshape(dx2, (-1, length, 2 * len(self.point_landmarks))),
+                tf.reshape(x, (-1, length, 2 * len(self.landmarks))),
+                tf.reshape(dx, (-1, length, 2 * len(self.landmarks))),
+                tf.reshape(dx2, (-1, length, 2 * len(self.landmarks))),
             ],
             axis=-1,
         )
-        # x = tf.reshape(x, (-1, length, 2 * len(self.point_landmarks)))
+        # x = tf.reshape(x, (-1, length, 2 * len(self.Constants.POINT_LANDMARKS)))
 
         x = tf.where(tf.math.is_nan(x), tf.constant(0.0, x.dtype), x)
         return x
@@ -164,26 +150,26 @@ def flip_lr(x):
     x = 1 - x
     new_x = tf.stack([x, y, z], -1)
     new_x = tf.transpose(new_x, [1, 0, 2])
-    lhand = tf.gather(new_x, LHAND, axis=0)
-    rhand = tf.gather(new_x, RHAND, axis=0)
-    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(LHAND)[..., None], rhand)
-    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(RHAND)[..., None], lhand)
-    llip = tf.gather(new_x, LLIP, axis=0)
-    rlip = tf.gather(new_x, RLIP, axis=0)
-    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(LLIP)[..., None], rlip)
-    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(RLIP)[..., None], llip)
-    lpose = tf.gather(new_x, LPOSE, axis=0)
-    rpose = tf.gather(new_x, RPOSE, axis=0)
-    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(LPOSE)[..., None], rpose)
-    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(RPOSE)[..., None], lpose)
-    leye = tf.gather(new_x, LEYE, axis=0)
-    reye = tf.gather(new_x, REYE, axis=0)
-    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(LEYE)[..., None], reye)
-    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(REYE)[..., None], leye)
-    lnose = tf.gather(new_x, LNOSE, axis=0)
-    rnose = tf.gather(new_x, RNOSE, axis=0)
-    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(LNOSE)[..., None], rnose)
-    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(RNOSE)[..., None], lnose)
+    lhand = tf.gather(new_x, Constants.LHAND, axis=0)
+    rhand = tf.gather(new_x, Constants.RHAND, axis=0)
+    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(Constants.LHAND)[..., None], rhand)
+    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(Constants.RHAND)[..., None], lhand)
+    llip = tf.gather(new_x, Constants.LLIP, axis=0)
+    rlip = tf.gather(new_x, Constants.RLIP, axis=0)
+    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(Constants.LLIP)[..., None], rlip)
+    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(Constants.RLIP)[..., None], llip)
+    lpose = tf.gather(new_x, Constants.LPOSE, axis=0)
+    rpose = tf.gather(new_x, Constants.RPOSE, axis=0)
+    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(Constants.LPOSE)[..., None], rpose)
+    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(Constants.RPOSE)[..., None], lpose)
+    leye = tf.gather(new_x, Constants.LEYE, axis=0)
+    reye = tf.gather(new_x, Constants.REYE, axis=0)
+    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(Constants.LEYE)[..., None], reye)
+    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(Constants.REYE)[..., None], leye)
+    lnose = tf.gather(new_x, Constants.LNOSE, axis=0)
+    rnose = tf.gather(new_x, Constants.RNOSE, axis=0)
+    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(Constants.LNOSE)[..., None], rnose)
+    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(Constants.RNOSE)[..., None], lnose)
     new_x = tf.transpose(new_x, [1, 0, 2])
     return new_x
 
@@ -295,7 +281,7 @@ def augment_fn(x, always=False, max_len=None):
     return x
 
 
-def filter_nans_tf(x, ref_point=POINT_LANDMARKS):
+def filter_nans_tf(x, ref_point=Constants.POINT_LANDMARKS):
     mask = tf.math.logical_not(
         tf.reduce_all(tf.math.is_nan(tf.gather(x, ref_point, axis=1)), axis=[-2, -1])
     )
@@ -368,7 +354,7 @@ def get_tfrec_dataset(
                 tf.constant(LABEL_PAD, dtype=tf.int64),
                 # tf.constant(0, dtype=tf.int64),
             ),
-            padded_shapes=([max_len, CHANNELS], [MAX_STRING_LEN]),
+            padded_shapes=([max_len, Constants.CHANNELS], [MAX_STRING_LEN]),
             drop_remainder=drop_remainder,
         )
 
