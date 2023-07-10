@@ -1,4 +1,4 @@
-from .utils import Constants
+from .constants import Constants
 import tensorflow as tf
 
 
@@ -200,7 +200,7 @@ def TransformerBlock(
     return apply
 
 
-def build_model(
+def build_model1(
     output_dim,
     max_len=64,
     dropout_step=0,
@@ -252,67 +252,7 @@ def build_model(
     return model
 
 
-def build_model2(output_dim, rnn_layers=5, rnn_units=128, max_len=64):
-    input_dim = Constants.CHANNELS
-    """Model similar to DeepSpeech2."""
-    # Model's input
-    inp = tf.keras.Input((max_len, input_dim), name="input")
-    # Expand the dimension to use 2D CNN.
-    x = tf.keras.layers.Reshape((-1, input_dim, 1), name="expand_dim")(inp)
-    # Convolution layer 1
-    x = tf.keras.layers.Conv2D(
-        filters=32,
-        kernel_size=[11, 41],
-        strides=[2, 2],
-        padding="same",
-        use_bias=False,
-        name="conv_1",
-    )(x)
-    x = tf.keras.layers.LayerNormalization(name="conv_1_bn")(x)
-    x = tf.keras.layers.ReLU(name="conv_1_relu")(x)
-    # Convolution layer 2
-    x = tf.keras.layers.Conv2D(
-        filters=32,
-        kernel_size=[11, 21],
-        strides=[1, 2],
-        padding="same",
-        use_bias=False,
-        name="conv_2",
-    )(x)
-    x = tf.keras.layers.LayerNormalization(name="conv_2_bn")(x)
-    x = tf.keras.layers.ReLU(name="conv_2_relu")(x)
-    # Reshape the resulted volume to feed the RNNs layers
-    x = tf.keras.layers.Reshape((-1, x.shape[-2] * x.shape[-1]))(x)
-    # RNN layers
-    for i in range(1, rnn_layers + 1):
-        recurrent = tf.keras.layers.GRU(
-            units=rnn_units,
-            activation="tanh",
-            recurrent_activation="sigmoid",
-            use_bias=True,
-            return_sequences=True,
-            reset_after=True,
-            name=f"gru_{i}",
-        )
-        x = tf.keras.layers.Bidirectional(
-            recurrent, name=f"bidirectional_{i}", merge_mode="concat"
-        )(x)
-        if i < rnn_layers:
-            x = tf.keras.layers.Dropout(rate=0.5)(x)
-    # Dense layer
-    x = tf.keras.layers.Dense(units=rnn_units * 2, name="dense_1")(x)
-    x = tf.keras.layers.ReLU(name="dense_1_relu")(x)
-    x = tf.keras.layers.Dropout(rate=0.5)(x)
-    # Classification layer
-    output = tf.keras.layers.Dense(units=output_dim, activation="log_softmax")(x)
-    # Model
-    model = tf.keras.Model(inp, output)
-    # Optimizer
-    # opt = tf.keras.optimizers.Adam(learning_rate=1e-4)
-    return model
-
-
 def get_model(output_dim, max_len, dim, input_pad):
     # model = build_model2(output_dim, max_len=max_len)
-    model = build_model(output_dim, max_len=max_len, input_pad=input_pad, dim=dim)
+    model = build_model1(output_dim, max_len=max_len, input_pad=input_pad, dim=dim)
     return model

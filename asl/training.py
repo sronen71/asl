@@ -3,17 +3,41 @@ import gc
 import numpy as np
 import glob
 import random
+import pandas as pd
 from .visualize import visualize_train
-from .utils import OneCycleLR, Snapshot, SWA, FGM, AWP, Constants
+from .utils import OneCycleLR, Snapshot, SWA, FGM, AWP
+from .constants import Constants
 from .config import CFG
 from .model import get_model, CTCLoss
 
-# os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-import tensorflow as tf  # noqa: E402
-import tensorflow_addons as tfa  # noqa: E402
+import tensorflow as tf
+import tensorflow_addons as tfa
 
 
-# tf.autograph.set_verbosity(10, alsologtostdout=True)
+def selected_columns():
+    file_example = glob.glob(CFG.input_path + "train_landmarks/*.parquet")[0]
+    df = pd.read_parquet(file_example)
+    selected = df.columns[[x + 1 for x in Constants.POINT_LANDMARKS]]
+    return selected
+
+
+def create_gen(file_names):
+    selected = selected_columns()
+    df1 = pd.read_csv(CFG.input_path + "train.csv")
+    df2 = pd.read_csv(CFG.input_path + "supplemental_metadata.csv")
+    df = pd.concat([df1, df2])
+
+    def gen():
+        for file_name in file_names:
+            seq_refs = df.loc[df.file_id == file_name]
+            seqs = pd.read_parquet(file_name, columns=selected)
+            for seq_id in seq_refs.sequence_id:
+                coords = seqs.iloc[seqs.index == seq_id].to_numpy()
+                phrase = str(df.loc[df.sequence_id == seq_id].phrase.iloc[0])
+                label = [Constants.char_dict[x] for x in phrase]
+                yield coords, label
+
+    return gen
 
 
 def resize_pad(x, max_len):
@@ -32,6 +56,7 @@ def count_data_items(dataset):
     dataset_size = 0
     for _ in dataset:
         dataset_size += 1
+        print(dataset_size)
     return dataset_size
 
 
@@ -41,36 +66,6 @@ def seed_everything(seed=42):
     random.seed(seed)
     np.random.seed(seed)
     tf.random.set_seed(seed)
-
-
-def get_strategy(device="GPU"):
-    is_tpu = False
-    if "TPU" in device:
-        tpu = "local" if device == "TPU-VM" else None
-        print("connecting to TPU...")
-        tpu = tf.distribute.cluster_resolver.TPUClusterResolver.connect(tpu=tpu)
-        strategy = tf.distribute.TPUStrategy(tpu)
-        is_tpu = True
-
-    if device == "GPU":
-        ngpu = len(tf.config.experimental.list_physical_devices("GPU"))
-        if ngpu > 1:
-            print("Using multi GPU")
-            strategy = tf.distribute.MirroredStrategy()
-        elif ngpu == 1:
-            print("Using single GPU")
-            strategy = tf.distribute.get_strategy()
-
-    if device == "GPU":
-        print("Num GPUs Available: ", ngpu)
-
-    REPLICAS = strategy.num_replicas_in_sync
-    print(f"REPLICAS: {REPLICAS}")
-
-    return strategy, REPLICAS, is_tpu
-
-
-STRATEGY, N_REPLICAS, IS_TPU = get_strategy()
 
 
 def interp1d_(x, target_len):
@@ -143,30 +138,53 @@ class Preprocess(tf.keras.layers.Layer):
 
 
 def flip_lr(x):
+    if x.shape[-1] == Constants.ROWS_PER_FRAME:
+        LHAND = Constants.LHAND
+        RHAND = Constants.RHAND
+        LLIP = Constants.LLIP
+        RLIP = Constants.RLIP
+        LEYE = Constants.LEYE
+        REYE = Constants.REYE
+        LNOSE = Constants.LNOSE
+        RNOSE = Constants.RNOSE
+        LPOSE = Constants.LPOSE
+        RPOSE = Constants.RPOSE
+    else:
+        LHAND = Constants.LANDMARK_INDICES["LHAND"]
+        RHAND = Constants.LANDMARK_INDICES["RHAND"]
+        LLIP = Constants.LANDMARK_INDICES["LLIP"]
+        RLIP = Constants.LANDMARK_INDICES["RLIP"]
+        LEYE = Constants.LANDMARK_INDICES["LEYE"]
+        REYE = Constants.LANDMARK_INDICES["REYE"]
+        LPOSE = Constants.LANDMARK_INDICES["LPOSE"]
+        RPOSE = Constants.LANDMARK_INDICES["RPOSE"]
+        LNOSE = Constants.LANDMARK_INDICES["LNOSE"]
+        RNOSE = Constants.LANDMARK_INDICES["RNOSE"]
+
     x, y, z = tf.unstack(x, axis=-1)
     x = 1 - x
     new_x = tf.stack([x, y, z], -1)
     new_x = tf.transpose(new_x, [1, 0, 2])
-    lhand = tf.gather(new_x, Constants.LHAND, axis=0)
-    rhand = tf.gather(new_x, Constants.RHAND, axis=0)
-    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(Constants.LHAND)[..., None], rhand)
-    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(Constants.RHAND)[..., None], lhand)
+    lhand = tf.gather(new_x, LHAND, axis=0)
+    rhand = tf.gather(new_x, RHAND, axis=0)
+    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(LHAND)[..., None], rhand)
+    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(RHAND)[..., None], lhand)
     llip = tf.gather(new_x, Constants.LLIP, axis=0)
     rlip = tf.gather(new_x, Constants.RLIP, axis=0)
-    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(Constants.LLIP)[..., None], rlip)
-    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(Constants.RLIP)[..., None], llip)
+    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(LLIP)[..., None], rlip)
+    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(RLIP)[..., None], llip)
     lpose = tf.gather(new_x, Constants.LPOSE, axis=0)
     rpose = tf.gather(new_x, Constants.RPOSE, axis=0)
-    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(Constants.LPOSE)[..., None], rpose)
-    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(Constants.RPOSE)[..., None], lpose)
-    leye = tf.gather(new_x, Constants.LEYE, axis=0)
-    reye = tf.gather(new_x, Constants.REYE, axis=0)
-    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(Constants.LEYE)[..., None], reye)
-    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(Constants.REYE)[..., None], leye)
-    lnose = tf.gather(new_x, Constants.LNOSE, axis=0)
-    rnose = tf.gather(new_x, Constants.RNOSE, axis=0)
-    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(Constants.LNOSE)[..., None], rnose)
-    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(Constants.RNOSE)[..., None], lnose)
+    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(LPOSE)[..., None], rpose)
+    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(RPOSE)[..., None], lpose)
+    leye = tf.gather(new_x, LEYE, axis=0)
+    reye = tf.gather(new_x, REYE, axis=0)
+    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(LEYE)[..., None], reye)
+    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(REYE)[..., None], leye)
+    lnose = tf.gather(new_x, LNOSE, axis=0)
+    rnose = tf.gather(new_x, RNOSE, axis=0)
+    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(LNOSE)[..., None], rnose)
+    new_x = tf.tensor_scatter_nd_update(new_x, tf.constant(RNOSE)[..., None], lnose)
     new_x = tf.transpose(new_x, [1, 0, 2])
     return new_x
 
@@ -300,7 +318,6 @@ def decode_tfrec(record_bytes):
         tf.sparse.to_dense(features["coordinates"]), (-1, Constants.ROWS_PER_FRAME, 3)
     )
     out["label"] = tf.sparse.to_dense(features["label"])
-    # out["sequence_id"] = features["sequence_id"][0]
     return out
 
 
@@ -315,11 +332,11 @@ def preprocess(x, max_len, augment=False):
     return (
         tf.cast(Preprocess(max_len=max_len)(coord)[0], tf.float32),
         x["label"],
-    )  # x["sequence_id"]
+    )
 
 
-def get_tfrec_dataset(
-    tfrecords,
+def get_dataset(
+    filenames,
     max_len,
     batch_size=64,
     drop_remainder=False,
@@ -327,11 +344,22 @@ def get_tfrec_dataset(
     shuffle=False,
     repeat=False,
 ):
-    # Initialize dataset with TFRecords
-    ds = tf.data.TFRecordDataset(
-        tfrecords, num_parallel_reads=tf.data.AUTOTUNE, compression_type="GZIP"
-    )
-    ds = ds.map(decode_tfrec, tf.data.AUTOTUNE)
+    if "tfrecord" in filenames[0]:
+        print("TFRECORD dataset")
+        ds = tf.data.TFRecordDataset(
+            filenames, num_parallel_reads=tf.data.AUTOTUNE, compression_type="GZIP"
+        )
+        ds = ds.map(decode_tfrec, tf.data.AUTOTUNE)
+    else:
+        print("Generator Dataset")
+        ds = tf.data.Dataset.from_generator(
+            create_gen(filenames),
+            output_signature=(
+                tf.TensorSpec(shape=(None, len(selected_columns())), dtype=tf.float32),
+                tf.TensorSpec(shape=(None), dtype=tf.int32),
+            ),
+        )
+        ds = ds.cache()
     ds = ds.map(lambda x: preprocess(x, augment=augment, max_len=max_len), tf.data.AUTOTUNE)
 
     if repeat:
@@ -349,7 +377,6 @@ def get_tfrec_dataset(
             padding_values=(
                 tf.constant(Constants.INPUT_PAD, dtype=tf.float32),
                 tf.constant(Constants.LABEL_PAD, dtype=tf.int64),
-                # tf.constant(0, dtype=tf.int64),
             ),
             padded_shapes=([max_len, Constants.CHANNELS], [Constants.MAX_STRING_LEN]),
             drop_remainder=drop_remainder,
@@ -361,35 +388,20 @@ def get_tfrec_dataset(
 
 
 def explore(ds):
-    # char_dict = get_char_dict()
-    # inv_dict = {v: k for k, v in char_dict.items()}
     counter = 0
     for feature, label in ds:  # , sequence_id in ds:
         feature = feature.numpy()
         label = label.numpy()
-        # sequence_id = sequence_id.numpy()
-        # label_str = "".join([inv_dict[x] for x in label[0, :].tolist()])
-        # print(
-        #    counter,
-        #    len(sequence_id),
-        #    feature.shape,
-        #    label.shape,
-        #    np.min(feature),
-        #    np.max(feature),
-        #    label_str,
-        # )
         counter += 1
-        # print(sequence_id, feature.shape, label.shape)
         for i in range(3):
             N = feature.shape[-1]
             coordinates = feature[i, :].reshape(-1, N // 6, 6)
             coordinates = coordinates[:, :, :2]
-            # visualize_train(sequence_id[i], coordinates, label[i, :])
             visualize_train("", coordinates, label[i, :])
         break
 
 
-def train_fold(config, fold, train_files, valid_files=None, strategy=STRATEGY, summary=True):
+def train_run(config, train_files, valid_files=None, summary=True, fold=0):
     seed_everything(config.seed)
     tf.keras.backend.clear_session()
     gc.collect()
@@ -405,51 +417,40 @@ def train_fold(config, fold, train_files, valid_files=None, strategy=STRATEGY, s
         tf.keras.mixed_precision.set_global_policy(policy)
     augment_train = True
     repeat_train = True
-    shuffle = 16384
-    if fold != "all":
-        train_ds = get_tfrec_dataset(
-            train_files,
-            max_len=config.max_len,
-            batch_size=config.batch_size,
-            drop_remainder=True,
-            augment=augment_train,
-            repeat=repeat_train,
-            shuffle=shuffle,
-        )
-        valid_ds = get_tfrec_dataset(
+    # augment_train = False
+    # repeat_train = False
+
+    shuffle = 8192
+    train_ds = get_dataset(
+        train_files,
+        max_len=config.max_len,
+        batch_size=config.batch_size,
+        drop_remainder=True,
+        augment=augment_train,
+        repeat=repeat_train,
+        shuffle=shuffle,
+    )
+    if valid_files is not None:
+        valid_ds = get_dataset(
             valid_files,
             batch_size=config.batch_size,
             max_len=config.max_len,
         )
     else:
-        train_ds = get_tfrec_dataset(
-            train_files,
-            batch_size=config.batch_size,
-            max_len=config.max_len,
-            drop_remainder=False,
-            augment=augment_train,
-            repeat=repeat_train,
-            shuffle=shuffle,
-        )
         valid_ds = None
         valid_files = []
 
     # num_train = count_data_items(train_ds)
     # num_valid = count_data_items(valid_ds)
-    num_train = 1716 * 32
-    num_valid = 383 * 32
+    # print(num_train, num_valid, config.batch_size)
+    # num_train = 1716 * 32 # without supplemental
+    # num_valid = 383 * 32 % 20%
+    num_train = 3401 * 32  # with supplemental
+    num_valid = 352 * 32  # 10%
     steps_per_epoch = num_train // config.batch_size
     valid_steps = num_valid // config.batch_size
+    strategy = config.strategy
     with strategy.scope():
-        dropout_step = config.dropout_start_epoch * steps_per_epoch
-        # model = get_model(
-        #    max_len=config.max_len,
-        #    dropout_step=dropout_step,
-        #    dim=config.dim,
-        #    input_pad=INPUT_PAD,
-        #    output_dim=config.output_dim,
-        #
-        # )
         model = get_model(
             max_len=config.max_len,
             output_dim=config.output_dim,
@@ -494,12 +495,7 @@ def train_fold(config, fold, train_files, valid_files=None, strategy=STRATEGY, s
             learning_rate=schedule, weight_decay=decay_schedule, sma_threshold=4
         )  # , clipvalue=1.)
         opt = tfa.optimizers.Lookahead(opt, sync_period=5)
-
-        # loss=[
-        #    tf.keras.losses.CategoricalCrossentropy(from_logits=True, label_smoothing=0.1)
-        # ]
         loss = CTCLoss(pad_token_idx=Constants.LABEL_PAD)
-        # loss = CTCLoss3
 
         model.compile(
             optimizer=opt,
@@ -509,7 +505,6 @@ def train_fold(config, fold, train_files, valid_files=None, strategy=STRATEGY, s
             #        tf.keras.metrics.CategoricalAccuracy(),
             #    ],
             # ],
-            # steps_per_execution=10,
         )
 
     if summary:
@@ -596,25 +591,20 @@ def train_fold(config, fold, train_files, valid_files=None, strategy=STRATEGY, s
     return model, cv, history
 
 
-def train_folds(train_filenames, folds, config=CFG, strategy=STRATEGY, summary=True):
-    for fold in folds:
-        if fold != "all":
-            all_files = train_filenames
-            train_files = [x for x in all_files if f"fold_{fold}" not in x]
-            valid_files = [x for x in all_files if f"fold_{fold}" in x]
-        else:
-            train_files = train_filenames
-            valid_files = None
+def train_eval(filenames, config=CFG, summary=True):
+    n = len(filenames)
+    num_val = int(0.1 * n)
+    valid_files = filenames[:num_val]
+    train_files = filenames[num_val:]
 
-        train_fold(config, fold, train_files, valid_files, strategy=strategy, summary=summary)
-    return
+    train_run(config, train_files, valid_files, summary=True)
 
 
-def train():
+def train(config=CFG):
     tf.keras.backend.clear_session()
-    records_path = CFG.output_path + "/records/"
-    train_filenames = glob.glob(records_path + "/*.tfrecord")
-
-    # ds = get_tfrec_dataset(train_filenames, max_len=CFG.max_len, augment=True, batch_size=1024)
+    data_filenames1 = sorted(glob.glob(config.output_path + "records/*.tfrecord"))
+    data_filenames2 = sorted(glob.glob(config.output_path + "sup_records/*.tfrecord"))
+    data_filenames = data_filenames1 + data_filenames2
+    # ds =get_dataset(train_filenames, max_len=CFG.max_len, augment=True, batch_size=1024)
     # explore(ds)
-    train_folds(train_filenames, folds=[0])
+    train_eval(data_filenames)

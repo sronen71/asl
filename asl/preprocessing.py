@@ -3,7 +3,7 @@ import pandas as pd
 import os
 import numpy as np
 import tensorflow as tf
-from .utils import Constants, get_char_dict
+from .constants import Constants
 from .config import CFG
 
 
@@ -15,15 +15,14 @@ def _int_array_feature(value):
     return tf.train.Feature(int64_list=tf.train.Int64List(value=value))
 
 
-def preprocess(output_path=CFG.output_path):
-    char_dict = get_char_dict()
-    # files1 = glob.glob(input_path + "train_landmarks/*.parquet")
-    files1 = []
-    files2 = glob.glob(CFG.input_path + "supplemental_landmarks/*.parquet")
+def preprocess(config=CFG):
+    output_path = config.output_path
+    files1 = glob.glob(config.input_path + "train_landmarks/*.parquet")
+    files2 = glob.glob(config.input_path + "supplemental_landmarks/*.parquet")
     files = files1 + files2
 
-    dtrain1 = pd.read_csv(CFG.input_path + "train.csv")
-    dtrain2 = pd.read_csv(CFG.input_path + "supplemental_metadata.csv")
+    dtrain1 = pd.read_csv(config.input_path + "train.csv")
+    dtrain2 = pd.read_csv(config.input_path + "supplemental_metadata.csv")
     dtrain = pd.concat([dtrain1, dtrain2])
     # print(dtrain[["file_id", "sequence_id", "participant_id"]].sort_values(by=["participant_id"]))
     # MAX_STRING_LEN = 43
@@ -49,7 +48,7 @@ def preprocess(output_path=CFG.output_path):
         with tf.io.TFRecordWriter(output_file, options=options) as writer:
             for seq in unique_seqs:
                 phrase = labels[labels["sequence_id"] == seq]["phrase"].item()
-                label = [char_dict[x] for x in phrase]
+                label = [Constants.char_dict[x] for x in phrase]
                 frames = df.loc[seq]
                 # print(file_id, seq, phrase)
                 if frames.ndim < 2:
