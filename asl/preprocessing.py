@@ -57,7 +57,7 @@ def preprocess(config=CFG):
                 frames_numpy = (
                     frames_numpy.reshape(-1, 3, Constants.ROWS_PER_FRAME)
                     .transpose([0, 2, 1])  # Now it's (None,ROW_PER_FRAME,3)
-                    .flatten()
+                    .flatten()  # x1,y1,z1,x2,y2,z2,...
                     .astype(np.float32)
                 )
                 # f1 = frames.reshape(-1, ROWS_PER_FRAME, 3)

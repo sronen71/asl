@@ -154,5 +154,8 @@ class Constants:
             if landmark in POINT_LANDMARKS:
                 LANDMARK_INDICES[part].append(POINT_LANDMARKS.index(landmark))
 
+    CENTER_LANDMARKS = LNOSE + RNOSE
+    CENTER_INDICES = LANDMARK_INDICES["LNOSE"] + LANDMARK_INDICES["RNOSE"]
+
     NUM_NODES = len(POINT_LANDMARKS)
     CHANNELS = 6 * NUM_NODES

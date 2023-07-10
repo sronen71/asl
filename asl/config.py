@@ -39,14 +39,13 @@ class CFG:
     seed = 42
     verbose = 1  # 0) silent 1) progress bar 2) one line per epoch
 
-    # max_len = 300  # max number of frames
+    # max number of frames
     max_len = 256
+    # max_len = 128
     replicas = 1
-    lr = 5e-4 * replicas  # 5e-4
-    weight_decay = 0.1
-    lr_min = 1e-6
+    lr = 2e-4 * replicas  # 5e-4
+    weight_decay = 5e-5  # 4e-4
     epoch = 50  # 400
-    warmup = 0.1  # 0.1
     batch_size = 64 * replicas  # 64*
     snapshot_epochs = []  # type: ignore
     swa_epochs = []  # type: ignore
