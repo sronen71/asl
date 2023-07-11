@@ -7,7 +7,7 @@ from .model import get_model
 import tensorflow as tf
 
 
-def eval_folds(eval_filenames, fold=0, config=CFG):
+def eval_folds(eval_filenames, config, experiment_id):
     ds = get_dataset(eval_filenames, max_len=CFG.max_len, batch_size=128)
     model = get_model(
         max_len=config.max_len,
@@ -15,21 +15,15 @@ def eval_folds(eval_filenames, fold=0, config=CFG):
         dim=config.dim,
         input_pad=Constants.INPUT_PAD,
     )
-    saved_based_model = f"{config.log_path}/{config.comment}-fold{fold}-best.h5"
+    saved_based_model = f"{config.log_path}/{config.comment}-exp{experiment_id}-best.h5"
     model.load_weights(saved_based_model)
     lev = metric(ds, model)
     print(lev)
 
 
-def eval(config=CFG):
+def eval(config=CFG, experiment_id=0):
     tf.keras.backend.clear_session()
-    data_filenames1 = sorted(glob.glob(config.input_path + "train_landmarks/*.parquet"))
-    data_filenames2 = sorted(glob.glob(config.input_path + "supplemental_landmarks/*.parquet"))
-    data_filenames = data_filenames1  # + data_filenames2
-    n = len(data_filenames)
-    num_val = int(config.eval_ratio * n)
-    eval_filenames = data_filenames[:num_val]
+    data_filenames = sorted(glob.glob(config.input_path + "train_landmarks/*.parquet"))
+    eval_filenames = data_filenames[: config.num_eval]
 
-    # print(eval_filenames)
-
-    eval_folds(eval_filenames, fold=0)
+    eval_folds(eval_filenames, config, experiment_id)

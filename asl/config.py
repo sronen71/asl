@@ -70,4 +70,4 @@ class CFG:
     dim = 384
     comment = f"model-{dim}-seed{seed}"
     output_dim = 61
-    eval_ratio = 0.1
+    num_eval = 6

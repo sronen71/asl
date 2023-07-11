@@ -12,8 +12,7 @@ from .config import CFG
 from .model import get_model, CTCLoss
 
 
-def selected_columns():
-    file_example = glob.glob(CFG.input_path + "train_landmarks/*.parquet")[0]
+def selected_columns(file_example):
     df = pd.read_parquet(file_example)
     selected_x = df.columns[[x + 1 for x in Constants.POINT_LANDMARKS]].tolist()
     selected_y = [c.replace("x", "y") for c in selected_x]
@@ -26,10 +25,10 @@ def selected_columns():
     return selected  # x1,y1,x2,y2,...
 
 
-def create_gen(file_names):
-    selected = selected_columns()
-    df1 = pd.read_csv(CFG.input_path + "train.csv")
-    df2 = pd.read_csv(CFG.input_path + "supplemental_metadata.csv")
+def create_gen(file_names, input_path):
+    selected = selected_columns(file_names[0])
+    df1 = pd.read_csv(input_path + "train.csv")
+    df2 = pd.read_csv(input_path + "supplemental_metadata.csv")
     df = pd.concat([df1, df2])
 
     def gen():
@@ -321,6 +320,7 @@ def preprocess(x, max_len, augment=False):
 
 def get_dataset(
     filenames,
+    input_path,
     max_len,
     batch_size=64,
     drop_remainder=False,
@@ -329,7 +329,7 @@ def get_dataset(
     repeat=False,
 ):
     ds = tf.data.Dataset.from_generator(
-        create_gen(filenames),
+        create_gen(filenames, input_path),
         output_signature={
             "coordinates": tf.TensorSpec(shape=(None, Constants.NUM_NODES, 2), dtype=tf.float32),
             "label": tf.TensorSpec(shape=(None,), dtype=tf.int64),
@@ -377,7 +377,7 @@ def explore(ds, n=3):
         break
 
 
-def train_run(config, train_files, valid_files=None, summary=True, fold=0):
+def train_run(train_files, valid_files=None, summary=True, config=CFG, experiment_id=0):
     seed_everything(config.seed)
     tf.keras.backend.clear_session()
     gc.collect()
@@ -399,6 +399,7 @@ def train_run(config, train_files, valid_files=None, summary=True, fold=0):
     shuffle = 8192
     train_ds = get_dataset(
         train_files,
+        input_path=config.input_path,
         max_len=config.max_len,
         batch_size=config.batch_size,
         drop_remainder=True,
@@ -409,6 +410,7 @@ def train_run(config, train_files, valid_files=None, summary=True, fold=0):
     if valid_files is not None:
         valid_ds = get_dataset(
             valid_files,
+            input_path=config.input_path,
             max_len=config.max_len,
             batch_size=config.batch_size,
         )
@@ -471,26 +473,26 @@ def train_run(config, train_files, valid_files=None, summary=True, fold=0):
         print()
         print(train_ds, valid_ds)
         print()
-    print(f"---------fold{fold}---------")
+    print(f"---------experiment {experiment_id}---------")
     print(f"train:{num_train} valid:{num_valid}")
     print()
 
     if config.resume:
         print(f"resume from epoch{config.resume}")
-        model.load_weights(f"{config.log_path}/{config.comment}-fold{fold}-last.h5")
+        model.load_weights(f"{config.log_path}/{config.comment}-exp{experiment_id}-last.h5")
         if train_ds is not None:
             model.evaluate(train_ds.take(steps_per_epoch))
         if valid_ds is not None:
             model.evaluate(valid_ds)
 
     csv_logger = tf.keras.callbacks.CSVLogger(
-        f"{config.log_path}/{config.comment}-fold{fold}-logs.csv"
+        f"{config.log_path}/{config.comment}-exp{experiment_id}-logs.csv"
     )
     tb_logger = tf.keras.callbacks.TensorBoard(
         log_dir="config.log_path", histogram_freq=0, write_graph=True, write_images=True
     )
     sv_loss = tf.keras.callbacks.ModelCheckpoint(
-        f"{config.log_path}/{config.comment}-fold{fold}-best.h5",
+        f"{config.log_path}/{config.comment}-exp{experiment_id}-best.h5",
         monitor="val_loss",
         verbose=1,
         save_best_only=True,
@@ -498,10 +500,12 @@ def train_run(config, train_files, valid_files=None, summary=True, fold=0):
         mode="min",
         save_freq="epoch",
     )
-    snap = Snapshot(f"{config.log_path}/{config.comment}-fold{fold}", config.snapshot_epochs)
+    snap = Snapshot(
+        f"{config.log_path}/{config.comment}-exp{experiment_id}", config.snapshot_epochs
+    )
     # stochastic weight averaging
     swa = SWA(
-        f"{config.log_path}/{config.comment}-fold{fold}",
+        f"{config.log_path}/{config.comment}-exp{experiment_id}",
         config.swa_epochs,
         strategy=strategy,
         train_ds=train_ds,
@@ -517,7 +521,6 @@ def train_run(config, train_files, valid_files=None, summary=True, fold=0):
         callbacks.append(tb_logger)
         callbacks.append(snap)
         # callbacks.append(swa)
-        # if fold != "all":
         callbacks.append(sv_loss)
 
     callbacks.append(tf.keras.callbacks.TerminateOnNaN())
@@ -534,39 +537,34 @@ def train_run(config, train_files, valid_files=None, summary=True, fold=0):
     )
 
     if config.save_output:  # reload the saved best weights checkpoint
-        saved_based_model = f"{config.log_path}/{config.comment}-fold{fold}-best.h5"
+        saved_based_model = f"{config.log_path}/{config.comment}-exp{experiment_id}-best.h5"
         if os.path.exists(saved_based_model):
             model.load_weights(saved_based_model)
         else:
             print(f"Warning: could not find {saved_based_model}")
-    if fold != "all":
+    if valid_ds is not None:
         cv = model.evaluate(valid_ds, verbose=config.verbose, steps=valid_steps)
     else:
         cv = None
-
     return model, cv, history
 
 
-def train_eval(filenames, config=CFG, summary=True):
-    n = len(filenames)
-    num_val = int(0.1 * n)
-    valid_files = filenames[:num_val]
-    train_files = filenames[num_val:]
+def train_eval(filenames, config=CFG, summary=True, experiment_id=0):
+    valid_files = filenames[: config.num_eval]  # first part in list
+    train_files = filenames[config.num_eval :]
 
-    train_run(config, train_files, valid_files, summary=True)
+    train_run(train_files, valid_files, summary=True, config=config, experiment_id=experiment_id)
 
 
-def train(config=CFG):
+def train(config=CFG, experiment_id=0):
     tf.keras.backend.clear_session()
 
     data_filenames1 = sorted(glob.glob(config.input_path + "train_landmarks/*.parquet"))
     data_filenames2 = sorted(glob.glob(config.input_path + "supplemental_landmarks/*.parquet"))
-
-    # data_filenames = data_filenames1 + data_filenames2
-    data_filenames = data_filenames1
+    data_filenames = data_filenames1 + data_filenames2
 
     # ds = get_dataset(data_filenames, max_len=CFG.max_len, augment=True, batch_size=1024)
     # explore(ds)
     # exit()
 
-    train_eval(data_filenames)
+    train_eval(data_filenames, config=config, experiment_id=experiment_id)
