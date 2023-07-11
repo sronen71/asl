@@ -184,13 +184,13 @@ def TransformerBlock(
 ):
     def apply(inputs):
         x = inputs
-        x = tf.keras.layers.LayerNormalization(momentum=0.95)(x)
+        x = tf.keras.layers.LayerNormalization()(x)
         x = MultiHeadSelfAttention(dim=dim, num_heads=num_heads, dropout=attn_dropout)(x)
         x = tf.keras.layers.Dropout(drop_rate, noise_shape=(None, 1, 1))(x)
         x = tf.keras.layers.Add()([inputs, x])
         attn_out = x
 
-        x = tf.keras.layers.LayerNormalization(momentum=0.95)(x)
+        x = tf.keras.layers.LayerNormalization()(x)
         x = tf.keras.layers.Dense(dim * expand, use_bias=False, activation=activation)(x)
         x = tf.keras.layers.Dense(dim, use_bias=False)(x)
         x = tf.keras.layers.Dropout(drop_rate, noise_shape=(None, 1, 1))(x)
@@ -246,7 +246,7 @@ def build_model1(
     lstm = tf.keras.layers.LSTM(units=output_dim, return_sequences=True)
     x = tf.keras.layers.Bidirectional(lstm)(x)
     # x = LateDropout(0.8, start_step=dropout_step)(x)
-
+    # x = tf.keras.layers.LayerNormalization()(x)
     outputs = tf.keras.layers.Dense(output_dim, activation="log_softmax")(x)  # logits
     model = tf.keras.Model(inp, outputs)
     return model

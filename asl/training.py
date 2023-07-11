@@ -18,13 +18,13 @@ def selected_columns():
     df = pd.read_parquet(file_example)
     selected_x = df.columns[[x + 1 for x in Constants.POINT_LANDMARKS]].tolist()
     selected_y = [c.replace("x", "y") for c in selected_x]
-    selected_z = [c.replace("x", "z") for c in selected_x]
+    # selected_z = [c.replace("x", "z") for c in selected_x]
     selected = []
     for i in range(Constants.NUM_NODES):
         selected.append(selected_x[i])
         selected.append(selected_y[i])
-        selected.append(selected_z[i])
-    return selected
+        # selected.append(selected_z[i])
+    return selected  # x1,y1,x2,y2,...
 
 
 def create_gen(file_names):
@@ -43,7 +43,8 @@ def create_gen(file_names):
                 coords = seqs.iloc[seqs.index == seq_id].to_numpy()
                 if coords.shape[0] < 2:
                     continue
-                coords = coords.reshape((coords.shape[0], -1, 3))
+                coords = coords.reshape((coords.shape[0], -1, 2))
+                # coords = coords[..., :2]
                 phrase = str(df.loc[df.sequence_id == seq_id].phrase.iloc[0])
                 label = [Constants.char_dict[x] for x in phrase]
                 out = {"coordinates": coords, "label": label}
@@ -52,15 +53,16 @@ def create_gen(file_names):
     return gen
 
 
-def resize_pad(x, max_len):
+def shrink_if_long(x, max_len):
     # shape T,F,3
-    if tf.shape(x)[0] < max_len:
-        x = tf.pad(
-            x,
-            ([[0, max_len - tf.shape(x)[0]], [0, 0], [0, 0]]),
-            constant_values=float("nan"),
-        )
-    else:
+    # if tf.shape(x)[0] < max_len:
+    #    x = tf.pad(
+    #        x,
+    #        ([[0, max_len - tf.shape(x)[0]], [0, 0], [0, 0]]),
+    #        constant_values=float("nan"),
+    #    )
+    # else
+    if tf.shape(x)[0] > max_len:
         x = tf.image.resize(x, (max_len, tf.shape(x)[1]))
     return x
 
@@ -103,7 +105,7 @@ def tf_nan_std(x, center=None, axis=0, keepdims=False):
 
 
 class Preprocess(tf.keras.layers.Layer):
-    def __init__(self, max_len, format="parquet", **kwargs):
+    def __init__(self, max_len, format="parquet", normalize=False, **kwargs):
         super().__init__(**kwargs)
         self.max_len = max_len
         if format == "parquet":
@@ -112,6 +114,7 @@ class Preprocess(tf.keras.layers.Layer):
         else:
             self.landmarks = Constants.POINT_LANDMARKS
             self.center = Constants.CENTER_LANDMARKS  # 17
+        self.normalize = normalize
 
     def call(self, inputs):
         if tf.rank(inputs) == 3:
@@ -119,13 +122,17 @@ class Preprocess(tf.keras.layers.Layer):
         else:
             x = inputs
 
-        mean = tf_nan_mean(tf.gather(x, self.center, axis=2), axis=[1, 2], keepdims=True)
-        mean = tf.where(tf.math.is_nan(mean), tf.constant(0.5, x.dtype), mean)
         if self.landmarks is not None:
-            x = tf.gather(x, self.landmarks, axis=2)  # N,T,P,C
-        std = tf_nan_std(x, center=mean, axis=[1, 2], keepdims=True)
-
-        x = (x - mean) / std
+            x_selected = tf.gather(x, self.landmarks, axis=2)  # N,T,P,C
+        else:
+            x_selected = x
+        if self.normalize:
+            mean = tf_nan_mean(tf.gather(x, self.center, axis=2), axis=[1, 2], keepdims=True)
+            mean = tf.where(tf.math.is_nan(mean), tf.constant(0.5, x.dtype), mean)
+            std = tf_nan_std(x_selected, center=mean, axis=[1, 2], keepdims=True)
+            x = (x_selected - mean) / std
+        else:
+            x = x_selected
 
         if self.max_len is not None:
             x = x[:, : self.max_len]
@@ -146,13 +153,14 @@ class Preprocess(tf.keras.layers.Layer):
 
         x = tf.concat(
             [
-                tf.reshape(x, (-1, length, 2 * Constants.NUM_NODES)),
+                tf.reshape(x, (-1, length, 2 * Constants.NUM_NODES)),  # x1,y1,x2,y2,...
                 tf.reshape(dx, (-1, length, 2 * Constants.NUM_NODES)),
                 tf.reshape(dx2, (-1, length, 2 * Constants.NUM_NODES)),
             ],
             axis=-1,
         )
 
+        # x1,y1,x2,y2,...dx1,dy1,dx2,dy2,...
         x = tf.where(tf.math.is_nan(x), tf.constant(0.0, x.dtype), x)
         return x
 
@@ -181,9 +189,9 @@ def flip_lr(x):
         LPOSE = Constants.LANDMARK_INDICES["LPOSE"]
         RPOSE = Constants.LANDMARK_INDICES["RPOSE"]
 
-    x, y, z = tf.unstack(x, axis=-1)
+    x, y = tf.unstack(x, axis=-1)
     x = 1 - x
-    new_x = tf.stack([x, y, z], -1)
+    new_x = tf.stack([x, y], -1)
     new_x = tf.transpose(new_x, [1, 0, 2])
     lhand = tf.gather(new_x, LHAND, axis=0)
     rhand = tf.gather(new_x, RHAND, axis=0)
@@ -277,7 +285,7 @@ def temporal_mask(x, size=[1, 10], mask_value=float("nan")):
     x = tf.tensor_scatter_nd_update(
         x,
         tf.range(mask_offset, mask_offset + mask_size)[..., None],
-        tf.fill([mask_size, tf.shape(x)[1], 3], mask_value),
+        tf.fill([mask_size, tf.shape(x)[1], 2], mask_value),
     )
     return x
 
@@ -325,9 +333,10 @@ def decode_tfrec(record_bytes):
         },
     )
     out = {}
-    out["coordinates"] = tf.reshape(
+    coordinates = tf.reshape(
         tf.sparse.to_dense(features["coordinates"]), (-1, Constants.ROWS_PER_FRAME, 3)
     )
+    out["coordinates"] = coordinates[..., :2]
     out["label"] = tf.sparse.to_dense(features["label"])
     return out
 
@@ -342,13 +351,13 @@ def preprocess(x, max_len, augment=False, format="parquet"):
 
     if augment:
         coord = augment_fn(coord, max_len=max_len)
-    coord = resize_pad(coord, max_len=max_len)
+    coord = shrink_if_long(coord, max_len=max_len)
 
     if format == "parquet":
         nrows = Constants.NUM_NODES
     else:
         nrows = Constants.ROWS_PER_FRAME
-    coord = tf.ensure_shape(coord, (None, nrows, 3))
+    coord = tf.ensure_shape(coord, (None, nrows, 2))
     coord = tf.cast(Preprocess(max_len=max_len, format=format)(coord)[0], tf.float32)
 
     return (coord, x["label"])
@@ -372,12 +381,12 @@ def get_dataset(
         ds = ds.map(decode_tfrec, tf.data.AUTOTUNE)
     else:
         format = "parquet"
-        print("Generator Dataset")
+        print("Parquet Dataset")
         ds = tf.data.Dataset.from_generator(
             create_gen(filenames),
             output_signature={
                 "coordinates": tf.TensorSpec(
-                    shape=(None, Constants.NUM_NODES, 3), dtype=tf.float32
+                    shape=(None, Constants.NUM_NODES, 2), dtype=tf.float32
                 ),
                 "label": tf.TensorSpec(shape=(None,), dtype=tf.int64),
             },
@@ -411,16 +420,17 @@ def get_dataset(
     return ds
 
 
-def explore(ds):
+def explore(ds, n=3):
     counter = 0
     for feature, label in ds:  # , sequence_id in ds:
-        feature = feature.numpy()
+        feature = feature.numpy()  # [batch,frames,features]
         label = label.numpy()
         counter += 1
-        for i in range(10):
-            N = feature.shape[-1]
-            coordinates = feature[i, :].reshape(-1, N // 6, 6)
+        for i in range(n):
+            F = feature.shape[-1]  # number of features
+            coordinates = feature[i, :, : (F // 3)].reshape(-1, F // 6, 2)
             coordinates = coordinates[:, :, :2]
+            # print(coordinates)
             visualize_train("", coordinates, label[i, :])
         break
 
@@ -457,8 +467,8 @@ def train_run(config, train_files, valid_files=None, summary=True, fold=0):
     if valid_files is not None:
         valid_ds = get_dataset(
             valid_files,
-            batch_size=config.batch_size,
             max_len=config.max_len,
+            batch_size=config.batch_size,
         )
     else:
         valid_ds = None
@@ -611,7 +621,8 @@ def train_eval(filenames, config=CFG, summary=True):
 
 
 def train(config=CFG, format="parquet"):
-    format = "tfrecord"
+    # format = "tfrecord"
+    format = "parquet"
     tf.keras.backend.clear_session()
     if format == "parquet":
         data_filenames1 = sorted(glob.glob(config.input_path + "train_landmarks/*.parquet"))
@@ -622,11 +633,6 @@ def train(config=CFG, format="parquet"):
 
     # data_filenames = data_filenames1 + data_filenames2
     data_filenames = data_filenames1
-
-    # gen = create_gen(data_filenames[:2])
-    # x = next(iter(gen()))
-    # print(x)
-    # exit()
 
     # ds = get_dataset(data_filenames, max_len=CFG.max_len, augment=True, batch_size=1024)
     # explore(ds)

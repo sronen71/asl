@@ -23,7 +23,7 @@ def eval_folds(eval_filenames, fold=0, config=CFG):
 
 def eval(config=CFG):
     tf.keras.backend.clear_session()
-    format = "tfrecord"
+    format = "parquet"
     if format == "parquet":
         data_filenames1 = sorted(glob.glob(config.input_path + "train_landmarks/*.parquet"))
         data_filenames2 = sorted(glob.glob(config.input_path + "supplemental_landmarks/*.parquet"))

@@ -5,5 +5,6 @@ asl/__pycache__/
 asl/input/
 asl/output/
 asl/config.output_dir/
-logs
+logs/
 config.log_path
+logs_bak/

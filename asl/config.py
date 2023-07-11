@@ -40,13 +40,13 @@ class CFG:
     verbose = 1  # 0) silent 1) progress bar 2) one line per epoch
 
     # max number of frames
-    max_len = 256
-    # max_len = 128
+    # max_len = 256
+    max_len = 128
     replicas = 1
-    lr = 2e-4 * replicas  # 5e-4
-    weight_decay = 5e-5  # 4e-4
+    lr = 1e-4 * replicas  # 5e-4
+    weight_decay = 1e-5  # 4e-4
     epoch = 50  # 400
-    batch_size = 64 * replicas  # 64*
+    batch_size = 64 * replicas
     snapshot_epochs = []  # type: ignore
     swa_epochs = []  # type: ignore
     # list(range(epoch//2,epoch+1))
@@ -59,8 +59,6 @@ class CFG:
     awp_start_epoch = 15
     dropout_start_epoch = 15
     resume = 0
-    decay_type = "cosine"
-    # dim = 192
     dim = 384
     comment = f"model-{dim}-seed{seed}"
     output_dim = 61
