@@ -4,13 +4,12 @@ import numpy as np
 import glob
 import random
 import pandas as pd
+import tensorflow as tf
 from .visualize import visualize_train
 from .utils import Snapshot, SWA, FGM, AWP
 from .constants import Constants
 from .config import CFG
 from .model import get_model, CTCLoss
-
-import tensorflow as tf
 
 
 def selected_columns():
@@ -54,14 +53,6 @@ def create_gen(file_names):
 
 
 def shrink_if_long(x, max_len):
-    # shape T,F,3
-    # if tf.shape(x)[0] < max_len:
-    #    x = tf.pad(
-    #        x,
-    #        ([[0, max_len - tf.shape(x)[0]], [0, 0], [0, 0]]),
-    #        constant_values=float("nan"),
-    #    )
-    # else
     if tf.shape(x)[0] > max_len:
         x = tf.image.resize(x, (max_len, tf.shape(x)[1]))
     return x
@@ -105,15 +96,10 @@ def tf_nan_std(x, center=None, axis=0, keepdims=False):
 
 
 class Preprocess(tf.keras.layers.Layer):
-    def __init__(self, max_len, format="parquet", normalize=False, **kwargs):
+    def __init__(self, max_len, normalize=False, **kwargs):
         super().__init__(**kwargs)
         self.max_len = max_len
-        if format == "parquet":
-            self.landmarks = None
-            self.center = Constants.CENTER_INDICES
-        else:
-            self.landmarks = Constants.POINT_LANDMARKS
-            self.center = Constants.CENTER_LANDMARKS  # 17
+        self.center = Constants.CENTER_INDICES
         self.normalize = normalize
 
     def call(self, inputs):
@@ -122,10 +108,7 @@ class Preprocess(tf.keras.layers.Layer):
         else:
             x = inputs
 
-        if self.landmarks is not None:
-            x_selected = tf.gather(x, self.landmarks, axis=2)  # N,T,P,C
-        else:
-            x_selected = x
+        x_selected = x
         if self.normalize:
             mean = tf_nan_mean(tf.gather(x, self.center, axis=2), axis=[1, 2], keepdims=True)
             mean = tf.where(tf.math.is_nan(mean), tf.constant(0.5, x.dtype), mean)
@@ -134,10 +117,7 @@ class Preprocess(tf.keras.layers.Layer):
         else:
             x = x_selected
 
-        if self.max_len is not None:
-            x = x[:, : self.max_len]
         x = x[..., :2]
-
         dx = tf.cond(
             tf.shape(x)[1] > 1,
             lambda: tf.pad(x[:, 1:] - x[:, :-1], [[0, 0], [0, 1], [0, 0], [0, 0]]),
@@ -323,42 +303,18 @@ def filter_nans_tf(x, ref_points=Constants.POINT_LANDMARKS):
     return x
 
 
-def decode_tfrec(record_bytes):
-    features = tf.io.parse_single_example(
-        record_bytes,
-        {
-            "coordinates": tf.io.VarLenFeature(tf.float32),
-            "label": tf.io.VarLenFeature(tf.int64),
-            "sequence_id": tf.io.FixedLenFeature(1, tf.int64),
-        },
-    )
-    out = {}
-    coordinates = tf.reshape(
-        tf.sparse.to_dense(features["coordinates"]), (-1, Constants.ROWS_PER_FRAME, 3)
-    )
-    out["coordinates"] = coordinates[..., :2]
-    out["label"] = tf.sparse.to_dense(features["label"])
-    return out
-
-
-def preprocess(x, max_len, augment=False, format="parquet"):
+def preprocess(x, max_len, augment=False):
     coord = x["coordinates"]
-    if format == "parquet":
-        ref_points = list(range(Constants.NUM_NODES))
-    else:
-        ref_points = Constants.POINT_LANDMARKS
+    ref_points = list(range(Constants.NUM_NODES))
     coord = filter_nans_tf(coord, ref_points)
 
     if augment:
         coord = augment_fn(coord, max_len=max_len)
     coord = shrink_if_long(coord, max_len=max_len)
 
-    if format == "parquet":
-        nrows = Constants.NUM_NODES
-    else:
-        nrows = Constants.ROWS_PER_FRAME
+    nrows = Constants.NUM_NODES
     coord = tf.ensure_shape(coord, (None, nrows, 2))
-    coord = tf.cast(Preprocess(max_len=max_len, format=format)(coord)[0], tf.float32)
+    coord = tf.cast(Preprocess(max_len=max_len)(coord)[0], tf.float32)
 
     return (coord, x["label"])
 
@@ -372,29 +328,15 @@ def get_dataset(
     shuffle=False,
     repeat=False,
 ):
-    if "tfrecord" in filenames[0]:
-        format = "tfrecord"
-        print("TFRECORD dataset")
-        ds = tf.data.TFRecordDataset(
-            filenames, num_parallel_reads=tf.data.AUTOTUNE, compression_type="GZIP"
-        )
-        ds = ds.map(decode_tfrec, tf.data.AUTOTUNE)
-    else:
-        format = "parquet"
-        print("Parquet Dataset")
-        ds = tf.data.Dataset.from_generator(
-            create_gen(filenames),
-            output_signature={
-                "coordinates": tf.TensorSpec(
-                    shape=(None, Constants.NUM_NODES, 2), dtype=tf.float32
-                ),
-                "label": tf.TensorSpec(shape=(None,), dtype=tf.int64),
-            },
-        )
-        ds = ds.cache()
-    ds = ds.map(
-        lambda x: preprocess(x, augment=augment, max_len=max_len, format=format), tf.data.AUTOTUNE
+    ds = tf.data.Dataset.from_generator(
+        create_gen(filenames),
+        output_signature={
+            "coordinates": tf.TensorSpec(shape=(None, Constants.NUM_NODES, 2), dtype=tf.float32),
+            "label": tf.TensorSpec(shape=(None,), dtype=tf.int64),
+        },
     )
+    ds = ds.cache()
+    ds = ds.map(lambda x: preprocess(x, augment=augment, max_len=max_len), tf.data.AUTOTUNE)
     if repeat:
         ds = ds.repeat()
 
@@ -502,19 +444,15 @@ def train_run(config, train_files, valid_files=None, summary=True, fold=0):
             )
         lr_schedule = tf.keras.optimizers.schedules.CosineDecay(
             initial_learning_rate=config.lr / 10,
-            decay_steps=int(0.95 * steps_per_epoch),
+            decay_steps=int(0.95 * steps_per_epoch * config.epochs),
             alpha=0.01,
             name=None,
             warmup_target=config.lr,
-            warmup_steps=int(0.05 * steps_per_epoch),
+            warmup_steps=int(0.05 * steps_per_epoch * config.epochs),
         )
 
         opt = tf.keras.optimizers.AdamW(learning_rate=lr_schedule, weight_decay=config.weight_decay)
         # opt = tf.keras.optimizers.AdamW(learning_rate=config.lr, weight_decay=config.weight_decay)
-        # opt = RectifiedAdam(
-        #    learning_rate=schedule, weight_decay=decay_schedule, sma_threshold=4
-        # )
-        # opt = Lookahead(opt, sync_period=5)
         loss = CTCLoss(pad_token_idx=Constants.LABEL_PAD)
 
         model.compile(
@@ -533,8 +471,6 @@ def train_run(config, train_files, valid_files=None, summary=True, fold=0):
         print()
         print(train_ds, valid_ds)
         print()
-        # schedule.plot()
-        # print()
     print(f"---------fold{fold}---------")
     print(f"train:{num_train} valid:{num_valid}")
     print()
@@ -589,7 +525,7 @@ def train_run(config, train_files, valid_files=None, summary=True, fold=0):
 
     history = model.fit(
         train_ds,
-        epochs=config.epoch - config.resume,
+        epochs=config.epochs - config.resume,
         steps_per_epoch=steps_per_epoch,
         callbacks=callbacks,
         validation_data=valid_ds,
@@ -620,16 +556,11 @@ def train_eval(filenames, config=CFG, summary=True):
     train_run(config, train_files, valid_files, summary=True)
 
 
-def train(config=CFG, format="parquet"):
-    # format = "tfrecord"
-    format = "parquet"
+def train(config=CFG):
     tf.keras.backend.clear_session()
-    if format == "parquet":
-        data_filenames1 = sorted(glob.glob(config.input_path + "train_landmarks/*.parquet"))
-        data_filenames2 = sorted(glob.glob(config.input_path + "supplemental_landmarks/*.parquet"))
-    else:
-        data_filenames1 = sorted(glob.glob(config.output_path + "records/*.tfrecord"))
-        data_filenames2 = sorted(glob.glob(config.output_path + "sup_records/*.tfrecord"))
+
+    data_filenames1 = sorted(glob.glob(config.input_path + "train_landmarks/*.parquet"))
+    data_filenames2 = sorted(glob.glob(config.input_path + "supplemental_landmarks/*.parquet"))
 
     # data_filenames = data_filenames1 + data_filenames2
     data_filenames = data_filenames1

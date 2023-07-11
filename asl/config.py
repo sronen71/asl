@@ -1,5 +1,9 @@
 import tensorflow as tf
 
+gpus = tf.config.list_physical_devices("GPU")
+for gpu in gpus:
+    tf.config.experimental.set_memory_growth(gpu, True)
+
 
 def get_strategy():
     logical_devices = tf.config.list_logical_devices()
@@ -14,12 +18,16 @@ def get_strategy():
         strategy = tf.distribute.TPUStrategy(tpu)
 
     elif gpu_available:
-        ngpu = len(tf.config.list_physical_devices("GPU"))
+        gpus = tf.config.list_physical_devices("GPU")
+        # for gpu in gpus:
+        #    tf.config.experimental.set_memory_growth(gpu, True)
+        ngpu = len(gpus)
         print("Num GPUs Available: ", ngpu)
         if ngpu > 1:
             strategy = tf.distribute.MirroredStrategy()
         else:
             strategy = tf.distribute.get_strategy()
+
     else:
         strategy = tf.distribute.get_strategy()
     replicas = strategy.num_replicas_in_sync
@@ -40,13 +48,13 @@ class CFG:
     verbose = 1  # 0) silent 1) progress bar 2) one line per epoch
 
     # max number of frames
-    # max_len = 256
-    max_len = 128
+    max_len = 256
+    # max_len = 128
     replicas = 1
-    lr = 1e-4 * replicas  # 5e-4
-    weight_decay = 1e-5  # 4e-4
-    epoch = 50  # 400
-    batch_size = 64 * replicas
+    lr = 5e-4 * replicas  # 5e-4
+    weight_decay = 1e-4  # 4e-4
+    epochs = 80  # 400
+    batch_size = 128 * replicas
     snapshot_epochs = []  # type: ignore
     swa_epochs = []  # type: ignore
     # list(range(epoch//2,epoch+1))
