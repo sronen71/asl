@@ -61,8 +61,8 @@ class CFG:
     swa_epochs = []  # type: ignore
     # list(range(epoch//2,epoch+1))
 
-    #fp16 = True
-    fp16 = False
+    fp16 = True
+    # fp16 = False
     fgm = False
     awp = False
     awp_lambda = 0.2

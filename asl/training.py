@@ -381,7 +381,7 @@ def train_run(train_files, valid_files=None, summary=True, config=CFG, experimen
     seed_everything(config.seed)
     tf.keras.backend.clear_session()
     gc.collect()
-    tf.config.optimizer.set_jit(True)
+    # tf.config.optimizer.set_jit("autoclustering")
 
     if config.fp16:
         if config.is_tpu:
@@ -461,7 +461,7 @@ def train_run(train_files, valid_files=None, summary=True, config=CFG, experimen
             optimizer=opt,
             loss=loss,
             metrics=[
-                # LevDistanceMetric(),
+                LevDistanceMetric(),
             ],
         )
 
@@ -547,22 +547,17 @@ def train_run(train_files, valid_files=None, summary=True, config=CFG, experimen
     return model, cv, history
 
 
-def train_eval(filenames, config=CFG, summary=True, experiment_id=0):
-    valid_files = filenames[: config.num_eval]  # first part in list
-    train_files = filenames[config.num_eval :]
-
-    train_run(train_files, valid_files, summary=True, config=config, experiment_id=experiment_id)
-
-
 def train(config=CFG, experiment_id=0):
     tf.keras.backend.clear_session()
 
     data_filenames1 = sorted(glob.glob(config.input_path + "train_landmarks/*.parquet"))
     data_filenames2 = sorted(glob.glob(config.input_path + "supplemental_landmarks/*.parquet"))
-    data_filenames = data_filenames1 + data_filenames2
+    data_filenames = data_filenames1  # + data_filenames2
 
     # ds = get_dataset(data_filenames, max_len=CFG.max_len, augment=True, batch_size=1024)
     # explore(ds)
     # exit()
+    valid_files = data_filenames[: config.num_eval]  # first part in list
+    train_files = data_filenames[config.num_eval :]
 
-    train_eval(data_filenames, config=config, experiment_id=experiment_id)
+    train_run(train_files, valid_files, summary=True, config=config, experiment_id=experiment_id)

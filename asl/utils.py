@@ -27,7 +27,7 @@ class SWA(tf.keras.callbacks.Callback):
         self.valid_steps = valid_steps
         self.strategy = strategy
 
-    @tf.function(jit_compile=True)
+    # @tf.function(jit_compile=True)
     def train_step(self, iterator):
         """The step function for one training step."""
 
@@ -205,7 +205,7 @@ class CallbackEval(tf.keras.callbacks.Callback):
             print("-" * 100)
 
 
-@tf.function(jit_compile=True)
+# @tf.function(jit_compile=True)
 def decode_phrase(pred):
     x = tf.argmax(pred, axis=1)
     paddings = tf.constant(
