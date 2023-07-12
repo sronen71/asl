@@ -377,8 +377,9 @@ def explore(ds, n=3):
         break
 
 
-def train_run(train_files, valid_files=None, summary=True, config=CFG, experiment_id=0):
-    seed_everything(config.seed)
+def train_run(
+    train_files, valid_files, num_train, num_valid, summary=True, config=CFG, experiment_id=0
+):
     tf.keras.backend.clear_session()
     gc.collect()
     # tf.config.optimizer.set_jit("autoclustering")
@@ -418,13 +419,6 @@ def train_run(train_files, valid_files=None, summary=True, config=CFG, experimen
         valid_ds = None
         valid_files = []
 
-    # num_train = count_data_items(train_ds)
-    # num_valid = count_data_items(valid_ds)
-    # print(num_train, num_valid, config.batch_size)
-    num_train = 1716 * 32  # without supplemental
-    num_valid = 191 * 32  # 10%
-    # num_train = 3401 * 32  # with supplemental
-    # num_valid = 352 * 32  # 10%
     steps_per_epoch = num_train // config.batch_size
     valid_steps = num_valid // config.batch_size
     strategy = config.strategy
@@ -447,7 +441,7 @@ def train_run(train_files, valid_files=None, summary=True, config=CFG, experimen
         lr_schedule = tf.keras.optimizers.schedules.CosineDecay(
             initial_learning_rate=config.lr / 10,
             decay_steps=int(0.95 * steps_per_epoch * config.epochs),
-            alpha=0.01,
+            alpha=0.02,
             name=None,
             warmup_target=config.lr,
             warmup_steps=int(0.05 * steps_per_epoch * config.epochs),
@@ -547,17 +541,38 @@ def train_run(train_files, valid_files=None, summary=True, config=CFG, experimen
     return model, cv, history
 
 
-def train(config=CFG, experiment_id=0):
+def train(config=CFG, experiment_id=0, use_supplemental=True):
     tf.keras.backend.clear_session()
+    seed_everything(config.seed)
 
-    data_filenames1 = sorted(glob.glob(config.input_path + "train_landmarks/*.parquet"))
-    data_filenames2 = sorted(glob.glob(config.input_path + "supplemental_landmarks/*.parquet"))
-    data_filenames = data_filenames1  # + data_filenames2
+    data_filenames = sorted(glob.glob(config.input_path + "train_landmarks/*.parquet"))
+    if use_supplemental:
+        data_filenames += sorted(glob.glob(config.input_path + "supplemental_landmarks/*.parquet"))
 
     # ds = get_dataset(data_filenames, max_len=CFG.max_len, augment=True, batch_size=1024)
     # explore(ds)
     # exit()
     valid_files = data_filenames[: config.num_eval]  # first part in list
     train_files = data_filenames[config.num_eval :]
+    random.shuffle(train_files)
 
-    train_run(train_files, valid_files, summary=True, config=config, experiment_id=experiment_id)
+    # num_train = count_data_items(train_ds)
+    # num_valid = count_data_items(valid_ds)
+    # print(num_train, num_valid, config.batch_size)
+
+    if use_supplemental:
+        num_train = 3401 * 32  # with supplemental
+    else:
+        num_train = 1716 * 32  # without supplemental
+
+    num_valid = 191 * 32  # first 6 files
+
+    train_run(
+        train_files,
+        valid_files,
+        num_train,
+        num_valid,
+        summary=True,
+        config=config,
+        experiment_id=experiment_id,
+    )
