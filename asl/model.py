@@ -247,7 +247,11 @@ def build_model1(
     x = tf.keras.layers.Bidirectional(lstm)(x)
     # x = LateDropout(0.8, start_step=dropout_step)(x)
     # x = tf.keras.layers.LayerNormalization()(x)
+
     outputs = tf.keras.layers.Dense(output_dim, activation="log_softmax")(x)  # logits
+
+    # x = tf.keras.layers.Dense(output_dim)(x)  # logits
+    # outputs = tf.keras.layers.Activation("log_softmax", dtype="float32")(x)
     model = tf.keras.Model(inp, outputs)
     return model
 

@@ -6,7 +6,7 @@ import random
 import pandas as pd
 import tensorflow as tf
 from .visualize import visualize_train
-from .utils import Snapshot, SWA, FGM, AWP
+from .utils import Snapshot, SWA, FGM, AWP, LevDistanceMetric
 from .constants import Constants
 from .config import CFG
 from .model import get_model, CTCLoss
@@ -44,8 +44,8 @@ def create_gen(file_names, input_path):
                 coords = coords.reshape((coords.shape[0], -1, 2))
                 # coords = coords[..., :2]
                 phrase = str(df.loc[df.sequence_id == seq_id].phrase.iloc[0])
-                label = [Constants.char_dict[x] for x in phrase]
-                out = {"coordinates": coords, "label": label}
+                label_code = [Constants.char_dict[x] for x in phrase]
+                out = {"coordinates": coords, "label": label_code}
                 yield out
 
     return gen
@@ -384,13 +384,13 @@ def train_run(train_files, valid_files=None, summary=True, config=CFG, experimen
     tf.config.optimizer.set_jit(True)
 
     if config.fp16:
-        # policy = tf.keras.mixed_precision.Policy("mixed_bfloat16")
-        # tf.keras.mixed_precision.set_global_policy(policy)
-        policy = tf.keras.mixed_precision.Policy("mixed_float16")
-        tf.keras.mixed_precision.set_global_policy(policy)
+        if config.is_tpu:
+            policy = "mixed_bfloat16"
+        else:
+            policy = "mixed_float16"
     else:
-        policy = tf.keras.mixed_precision.Policy("float32")
-        tf.keras.mixed_precision.set_global_policy(policy)
+        policy = "float32"
+    tf.keras.mixed_precision.set_global_policy(policy)
     augment_train = True
     repeat_train = True
     # augment_train = False
@@ -460,11 +460,9 @@ def train_run(train_files, valid_files=None, summary=True, config=CFG, experimen
         model.compile(
             optimizer=opt,
             loss=loss,
-            # metrics=[
-            #    [
-            #        tf.keras.metrics.CategoricalAccuracy(),
-            #    ],
-            # ],
+            metrics=[
+                # LevDistanceMetric(),
+            ],
         )
 
     if summary:

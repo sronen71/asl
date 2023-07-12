@@ -11,11 +11,13 @@ def get_strategy():
     tpu_available = any("TPU" in device.name for device in logical_devices)
     gpu_available = any("GPU" in device.name for device in logical_devices)
     strategy = None
+    is_tpu = False
     if tpu_available:
         tpu = "local"
         print("connecting to TPU...")
         tpu = tf.distribute.cluster_resolver.TPUClusterResolver.connect(tpu=tpu)
         strategy = tf.distribute.TPUStrategy(tpu)
+        is_tpu = True
 
     elif gpu_available:
         gpus = tf.config.list_physical_devices("GPU")
@@ -33,11 +35,11 @@ def get_strategy():
     replicas = strategy.num_replicas_in_sync
     print(f"REPLICAS: {replicas}")
 
-    return strategy, replicas
+    return strategy, replicas, is_tpu
 
 
 class CFG:
-    strategy, replicas = get_strategy()
+    strategy, replicas, is_tpu = get_strategy()
     n_splits = 5
     save_output = True
     log_path = "logs"
@@ -59,8 +61,8 @@ class CFG:
     swa_epochs = []  # type: ignore
     # list(range(epoch//2,epoch+1))
 
-    fp16 = True
-    # fp16 = False
+    #fp16 = True
+    fp16 = False
     fgm = False
     awp = False
     awp_lambda = 0.2

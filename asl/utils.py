@@ -1,11 +1,8 @@
 import tensorflow as tf
 import numpy as np
 from .constants import Constants
-from Levenshtein import distance as Lev_distance
 
-gpus = tf.config.list_physical_devices("GPU")
-for gpu in gpus:
-    tf.config.experimental.set_memory_growth(gpu, True)
+from Levenshtein import distance as Lev_distance
 
 
 class SWA(tf.keras.callbacks.Callback):
@@ -180,27 +177,6 @@ def num_to_char_fn(y):
     return [Constants.inv_dict.get(x, "") for x in y]
 
 
-@tf.function(jit_compile=True)
-def decode_phrase(pred):
-    pad_token_idx = 59
-    x = tf.argmax(pred, axis=1)
-    diff = tf.not_equal(x[:-1], x[1:])
-    adjacent_indices = tf.where(diff)[:, 0]
-    x = tf.gather(x, adjacent_indices)
-    mask = x != pad_token_idx
-    x = tf.boolean_mask(x, mask, axis=0)
-    return x
-
-
-# A utility function to decode the output of the network
-def decode_batch_predictions(pred):
-    output_text = []
-    for result in pred:
-        result = "".join(num_to_char_fn(decode_phrase(result).numpy()))
-        output_text.append(result)
-    return output_text
-
-
 # A callback class to output a few transcriptions during training
 class CallbackEval(tf.keras.callbacks.Callback):
     """Displays a batch of outputs after every epoch."""
@@ -229,6 +205,32 @@ class CallbackEval(tf.keras.callbacks.Callback):
             print("-" * 100)
 
 
+@tf.function(jit_compile=True)
+def decode_phrase(pred):
+    x = tf.argmax(pred, axis=1)
+    paddings = tf.constant(
+        [
+            [0, 1],
+        ]
+    )
+    x = tf.pad(x, paddings)
+    diff = tf.not_equal(x[:-1], x[1:])
+    adjacent_indices = tf.where(diff)[:, 0]
+    x = tf.gather(x, adjacent_indices)
+    mask = x != Constants.LABEL_PAD
+    x = tf.boolean_mask(x, mask, axis=0)
+    return x
+
+
+# A utility function to decode the output of the network
+def decode_batch_predictions(pred):
+    output_text = []
+    for result in pred:
+        result = "".join(num_to_char_fn(decode_phrase(result).numpy()))
+        output_text.append(result)
+    return output_text
+
+
 def calculate_N_D(s1, s2):
     length = len(s1)
     lvd = Lev_distance(s1, s2)
@@ -248,23 +250,84 @@ def convert_to_strings(batch_label_code):
     return output
 
 
-def metric(val_ds, model):
+def global_metric(val_ds, model):
     global_N, global_D = 0, 0
     count = 0
+    metric = LevDistanceMetric()
     for batch in val_ds:
         count += 1
         print(count)
         feature, label = batch
         logits = model(feature)
+        _, _, D = batch_edit_distance(label, logits)
+        metric.update_state(label, logits)
+
         label = label.numpy()
         target_strings = convert_to_strings(label)
         predict_strings = decode_batch_predictions(logits)
+
         values = [
             calculate_N_D(target, predict)
             for target, predict in zip(target_strings, predict_strings)
         ]
-        global_D += np.sum([x[0] for x in values])
-        global_N += np.sum([x[1] for x in values])
-
+        batch_D = np.sum([x[0] for x in values])
+        batch_N = np.sum([x[1] for x in values])
+        global_D += batch_D
+        global_N += batch_N
     metric_value = np.clip((global_N - global_D) / global_N, a_min=0, a_max=1)
+    result = metric.result().numpy()
+    print("Custom metric", result)
+    print("External Lev package", metric_value)
     return metric_value
+
+
+def sparse_from_dense_ignore_value(dense_tensor):
+    mask = tf.not_equal(dense_tensor, Constants.LABEL_PAD)
+    indices = tf.where(mask)
+    values = tf.boolean_mask(dense_tensor, mask)
+    return tf.SparseTensor(indices, values, tf.shape(dense_tensor, out_type=tf.int64))
+
+
+def batch_edit_distance(y_true, y_logits):
+    blank = Constants.LABEL_PAD
+    B = tf.shape(y_logits)[0]
+    seq_length = tf.shape(y_logits)[1]
+    to_decode = tf.transpose(y_logits, perm=[1, 0, 2])
+    sequence_length = tf.fill(dims=[B], value=seq_length)
+    hypothesis = tf.nn.ctc_greedy_decoder(
+        tf.cast(to_decode, tf.float32), sequence_length, blank_index=blank
+    )[0][
+        0
+    ]  # full is [B,...]
+    truth = sparse_from_dense_ignore_value(y_true)  # full is [B,...]
+
+    edit_dist = tf.edit_distance(hypothesis, truth, normalize=False)
+
+    non_ignore_mask = tf.not_equal(y_true, blank)
+    N = tf.reduce_sum(tf.cast(non_ignore_mask, tf.float32))
+    D = tf.reduce_sum(edit_dist)
+    result = (N - D) / N
+    result = tf.clip_by_value(result, 0.0, 1.0)
+    return result, N, D
+
+
+class LevDistanceMetric(tf.keras.metrics.Metric):
+    def __init__(self, name="Lev", **kwargs):
+        super().__init__(name=name, **kwargs)
+        self.distance = self.add_weight(name="dist", initializer="zeros")
+        self.count = self.add_weight(name="count", initializer="zeros")
+
+    def update_state(self, y_true, y_logits, sample_weight=None):
+        # if using with keras compile, make sure the model outputs logits, not softmax probabilities
+        _, N, D = batch_edit_distance(y_true, y_logits)
+        self.distance.assign_add(D)
+        self.count.assign_add(N)
+
+    def result(self):
+        result = (self.count - self.distance) / self.count
+        result = tf.clip_by_value(result, 0.0, 1.0)
+        return result
+
+    def reset_state(self):
+        self.count.assign(0.0)
+        self.distance.assign(0.0)
