@@ -72,3 +72,14 @@ class CFG:
     comment = f"model-{dim}-seed{seed}"
     output_dim = 61
     num_eval = 6
+
+
+def update_config_with_strategy(config):
+    # cfg is configuration instance
+    strategy, replicas, is_tpu = get_strategy()
+    config.strategy = strategy
+    config.replicas = replicas
+    config.is_tpu = is_tpu
+    config.lr = config.lr * replicas
+    config.batch_size = config.batch_size * replicas
+    return config

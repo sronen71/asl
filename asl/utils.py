@@ -4,9 +4,18 @@ import pandas as pd
 import gc
 import psutil
 import os
+import random
 from .constants import Constants
 
 from Levenshtein import distance as Lev_distance
+
+
+# Seed all random number generators
+def seed_everything(seed=42):
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    tf.random.set_seed(seed)
 
 
 def selected_columns(file_example):
@@ -159,8 +168,9 @@ class CallbackEval(tf.keras.callbacks.Callback):
             print("-" * 100)
 
 
-# @tf.function(jit_compile=True)
 def decode_phrase(pred):
+    # decode cts prediction by prunning
+    # (T,CHAR_NUMS)
     x = tf.argmax(pred, axis=1)
     paddings = tf.constant(
         [

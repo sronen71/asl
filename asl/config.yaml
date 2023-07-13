@@ -1,0 +1,24 @@
+seed: 42
+verbose: 1  # 0) silent 1) progress bar 2) one line per epoch
+
+    # max number of frames
+max_len: 256
+lr: 5e-4 # per replica
+weight_decay: 1e-4  
+epochs: 80  
+batch_size: 128 # per replica
+snapshot_epochs: []  # type: ignore
+swa_epochs: []  # type: ignore
+    # list(range(epoch//2,epoch+1))
+
+
+fp16: True
+awp: False
+awp_lambda: 0.2
+awp_start_epoch: 15
+dropout_start_epoch: 15
+resume: 0
+dim: 384
+comment: f"model-{dim}-seed{seed}"
+output_dim: 61
+num_eval: 6

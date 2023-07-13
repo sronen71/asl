@@ -1,7 +1,7 @@
 import glob
-from .config import CFG
+from .config import CFG, update_config_with_strategy
 from .training import get_dataset
-from .utils import global_metric
+from .utils import global_metric, seed_everything
 from .constants import Constants
 from .model import get_model
 import tensorflow as tf
@@ -21,7 +21,11 @@ def eval_folds(eval_filenames, config, experiment_id):
     print(lev)
 
 
-def eval(config=CFG, experiment_id=0):
+def eval(cfg=CFG, experiment_id=0):
+    config = cfg()
+    tf.keras.backend.clear_session()
+    update_config_with_strategy(config)
+    seed_everything(config.seed)
     tf.keras.backend.clear_session()
     if config.fp16:
         if config.is_tpu:

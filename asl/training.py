@@ -6,9 +6,16 @@ import random
 import pandas as pd
 import tensorflow as tf
 from .visualize import visualize_train
-from .utils import SWA, AWP, LevDistanceMetric, selected_columns, MemoryUsageCallbackExtended
+from .utils import (
+    SWA,
+    AWP,
+    LevDistanceMetric,
+    selected_columns,
+    MemoryUsageCallbackExtended,
+    seed_everything,
+)
 from .constants import Constants
-from .config import CFG
+from .config import CFG, update_config_with_strategy
 from .model import get_model, CTCLoss
 
 
@@ -49,14 +56,6 @@ def count_data_items(dataset):
     for _ in dataset:
         dataset_size += 1
     return dataset_size
-
-
-# Seed all random number generators
-def seed_everything(seed=42):
-    os.environ["PYTHONHASHSEED"] = str(seed)
-    random.seed(seed)
-    np.random.seed(seed)
-    tf.random.set_seed(seed)
 
 
 def interp1d_(x, target_len):
@@ -372,7 +371,7 @@ def explore(ds, n=3):
         break
 
 
-def train_run(train_files, valid_files, num_train, summary=True, config=CFG, experiment_id=0):
+def train_run(train_files, valid_files, num_train, config=CFG, experiment_id=0, summary=False):
     gc.collect()
     tf.keras.backend.clear_session()
     # tf.config.optimizer.set_jit("autoclustering")
@@ -430,17 +429,18 @@ def train_run(train_files, valid_files, num_train, summary=True, config=CFG, exp
             model = AWP(
                 model.input, model.output, delta=config.awp_lambda, eps=0.0, start_step=awp_step
             )
+        base_lr = config.lr
         lr_schedule = tf.keras.optimizers.schedules.CosineDecay(
-            initial_learning_rate=config.lr / 10,
+            initial_learning_rate=base_lr / 10,
             decay_steps=int(0.95 * steps_per_epoch * config.epochs),
             alpha=0.02,
             name=None,
-            warmup_target=config.lr,
+            warmup_target=base_lr,
             warmup_steps=int(0.05 * steps_per_epoch * config.epochs),
         )
 
         opt = tf.keras.optimizers.AdamW(learning_rate=lr_schedule, weight_decay=config.weight_decay)
-        # opt = tf.keras.optimizers.AdamW(learning_rate=config.lr, weight_decay=config.weight_decay)
+        # opt = tf.keras.optimizers.AdamW(learning_rate=base_lr, weight_decay=config.weight_decay)
         loss = CTCLoss(pad_token_idx=Constants.LABEL_PAD)
 
         model.compile(
@@ -526,8 +526,10 @@ def train_run(train_files, valid_files, num_train, summary=True, config=CFG, exp
     return model, cv, history
 
 
-def train(config=CFG, experiment_id=0, use_supplemental=True):
+def train(cfg=CFG, experiment_id=0, use_supplemental=True):
+    config = cfg()
     tf.keras.backend.clear_session()
+    update_config_with_strategy(config)
     seed_everything(config.seed)
 
     data_filenames = sorted(glob.glob(config.input_path + "train_landmarks/*.parquet"))
