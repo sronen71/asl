@@ -8,30 +8,36 @@ for gpu in gpus:
 def get_strategy():
     logical_devices = tf.config.list_logical_devices()
     # Check if TPU is available
-    tpu_available = any("TPU" in device.name for device in logical_devices)
+    try:
+        tpu = tf.distribute.cluster_resolver.TPUClusterResolver()
+        print("Running on TPU ", tpu.master())
+    except ValueError:
+        tpu = None
+
     gpu_available = any("GPU" in device.name for device in logical_devices)
     strategy = None
     is_tpu = False
-    if tpu_available:
+    try:
+        tpu = tf.distribute.cluster_resolver.TPUClusterResolver()
         tpu = "local"
         print("connecting to TPU...")
         tpu = tf.distribute.cluster_resolver.TPUClusterResolver.connect(tpu=tpu)
         strategy = tf.distribute.TPUStrategy(tpu)
         is_tpu = True
+    except ValueError:
+        if gpu_available:
+            gpus = tf.config.list_physical_devices("GPU")
+            # for gpu in gpus:
+            #    tf.config.experimental.set_memory_growth(gpu, True)
+            ngpu = len(gpus)
+            print("Num GPUs Available: ", ngpu)
+            if ngpu > 1:
+                strategy = tf.distribute.MirroredStrategy()
+            else:
+                strategy = tf.distribute.get_strategy()
 
-    elif gpu_available:
-        gpus = tf.config.list_physical_devices("GPU")
-        # for gpu in gpus:
-        #    tf.config.experimental.set_memory_growth(gpu, True)
-        ngpu = len(gpus)
-        print("Num GPUs Available: ", ngpu)
-        if ngpu > 1:
-            strategy = tf.distribute.MirroredStrategy()
         else:
             strategy = tf.distribute.get_strategy()
-
-    else:
-        strategy = tf.distribute.get_strategy()
     replicas = strategy.num_replicas_in_sync
     print(f"REPLICAS: {replicas}")
 

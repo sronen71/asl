@@ -553,7 +553,7 @@ def train(cfg=CFG, experiment_id=0, use_supplemental=True):
         train_files,
         valid_files,
         num_train,
-        summary=True,
+        summary=False,
         config=config,
         experiment_id=experiment_id,
     )
