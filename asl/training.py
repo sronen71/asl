@@ -6,23 +6,10 @@ import random
 import pandas as pd
 import tensorflow as tf
 from .visualize import visualize_train
-from .utils import Snapshot, SWA, FGM, AWP, LevDistanceMetric
+from .utils import SWA, AWP, LevDistanceMetric, selected_columns, MemoryUsageCallbackExtended
 from .constants import Constants
 from .config import CFG
 from .model import get_model, CTCLoss
-
-
-def selected_columns(file_example):
-    df = pd.read_parquet(file_example)
-    selected_x = df.columns[[x + 1 for x in Constants.POINT_LANDMARKS]].tolist()
-    selected_y = [c.replace("x", "y") for c in selected_x]
-    # selected_z = [c.replace("x", "z") for c in selected_x]
-    selected = []
-    for i in range(Constants.NUM_NODES):
-        selected.append(selected_x[i])
-        selected.append(selected_y[i])
-        # selected.append(selected_z[i])
-    return selected  # x1,y1,x2,y2,...
 
 
 def create_gen(file_names, input_path):
@@ -38,30 +25,29 @@ def create_gen(file_names, input_path):
             seqs = pd.read_parquet(file_name, columns=selected)
 
             for seq_id in seq_refs.sequence_id:
-                coords = seqs.iloc[seqs.index == seq_id].to_numpy()
-                if coords.shape[0] < 2:
+                coords = seqs.iloc[seqs.index == seq_id]
+                if coords.empty:
                     continue
-                coords = coords.reshape((coords.shape[0], -1, 2))
-                # coords = coords[..., :2]
+                # if np.shape(coords)[0] < 2:
+                #    continue
+                coords = coords.to_numpy()
+                # check_nan = np.any(np.all(np.isnan(coords), axis=1))
+                # if check_nan:
+                #    print("nan frames", file_name, seq_id, check_nan)
+                #    exit()
+
                 phrase = str(df.loc[df.sequence_id == seq_id].phrase.iloc[0])
                 label_code = [Constants.char_dict[x] for x in phrase]
-                out = {"coordinates": coords, "label": label_code}
-                yield out
+                label_code = label_code
+                yield coords, label_code
 
     return gen
-
-
-def shrink_if_long(x, max_len):
-    if tf.shape(x)[0] > max_len:
-        x = tf.image.resize(x, (max_len, tf.shape(x)[1]))
-    return x
 
 
 def count_data_items(dataset):
     dataset_size = 0
     for _ in dataset:
         dataset_size += 1
-        print(dataset_size)
     return dataset_size
 
 
@@ -92,56 +78,6 @@ def tf_nan_std(x, center=None, axis=0, keepdims=False):
         center = tf_nan_mean(x, axis=axis, keepdims=True)
     d = x - center
     return tf.math.sqrt(tf_nan_mean(d * d, axis=axis, keepdims=keepdims))
-
-
-class Preprocess(tf.keras.layers.Layer):
-    def __init__(self, max_len, normalize=False, **kwargs):
-        super().__init__(**kwargs)
-        self.max_len = max_len
-        self.center = Constants.CENTER_INDICES
-        self.normalize = normalize
-
-    def call(self, inputs):
-        if tf.rank(inputs) == 3:
-            x = inputs[None, ...]
-        else:
-            x = inputs
-
-        x_selected = x
-        if self.normalize:
-            mean = tf_nan_mean(tf.gather(x, self.center, axis=2), axis=[1, 2], keepdims=True)
-            mean = tf.where(tf.math.is_nan(mean), tf.constant(0.5, x.dtype), mean)
-            std = tf_nan_std(x_selected, center=mean, axis=[1, 2], keepdims=True)
-            x = (x_selected - mean) / std
-        else:
-            x = x_selected
-
-        x = x[..., :2]
-        dx = tf.cond(
-            tf.shape(x)[1] > 1,
-            lambda: tf.pad(x[:, 1:] - x[:, :-1], [[0, 0], [0, 1], [0, 0], [0, 0]]),
-            lambda: tf.zeros_like(x),
-        )
-
-        dx2 = tf.cond(
-            tf.shape(x)[1] > 2,
-            lambda: tf.pad(x[:, 2:] - x[:, :-2], [[0, 0], [0, 2], [0, 0], [0, 0]]),
-            lambda: tf.zeros_like(x),
-        )
-        length = tf.shape(x)[1]
-
-        x = tf.concat(
-            [
-                tf.reshape(x, (-1, length, 2 * Constants.NUM_NODES)),  # x1,y1,x2,y2,...
-                tf.reshape(dx, (-1, length, 2 * Constants.NUM_NODES)),
-                tf.reshape(dx2, (-1, length, 2 * Constants.NUM_NODES)),
-            ],
-            axis=-1,
-        )
-
-        # x1,y1,x2,y2,...dx1,dy1,dx2,dy2,...
-        x = tf.where(tf.math.is_nan(x), tf.constant(0.0, x.dtype), x)
-        return x
 
 
 def flip_lr(x):
@@ -280,42 +216,103 @@ def spatial_mask(x, size=(0.05, 0.2), mask_value=float("nan")):
     return x
 
 
-def augment_fn(x, always=False, max_len=None):
-    if tf.random.uniform(()) < 0.4 or always:
+@tf.function()
+def augment_fn(x):
+    # shape (T,F)
+    x = tf.reshape(x, (tf.shape(x)[0], -1, 2))
+    if tf.random.uniform(()) < 0.4:
         x = resample(x, (0.5, 1.5))
-    if tf.random.uniform(()) < 0.4 or always:
+    if tf.random.uniform(()) < 0.4:
         x = flip_lr(x)
-    if tf.random.uniform(()) < 0.4 or always:
+    if tf.random.uniform(()) < 0.4:
         x = spatial_random_affine(x)
-    if tf.random.uniform(()) < 0.2 or always:
+    if tf.random.uniform(()) < 0.2:
         x = temporal_mask(x)
-    if tf.random.uniform(()) < 0.2 or always:
+    if tf.random.uniform(()) < 0.2:
         x = spatial_mask(x)
+    x = tf.reshape(x, (tf.shape(x)[0], -1))
     return x
 
 
-def filter_nans_tf(x, ref_points=Constants.POINT_LANDMARKS):
-    mask = tf.math.logical_not(
-        tf.reduce_all(tf.math.is_nan(tf.gather(x, ref_points, axis=1)), axis=[-2, -1])
-    )
-    x = tf.boolean_mask(x, mask, axis=0)
+class Preprocess(tf.keras.layers.Layer):
+    def __init__(self, max_len, normalize=False, **kwargs):
+        super().__init__(**kwargs)
+        self.max_len = max_len
+        self.center = Constants.CENTER_INDICES
+        self.normalize = normalize
+
+    # preprocess a batch of data
+    def call(self, x):
+        # rank is 3: [B,T,F]
+        # if your input is just [T,F], extend its dimesnion before calling.
+
+        x = tf.reshape(x, (tf.shape(x)[0], tf.shape(x)[1], -1, 2))
+        # dimensions now are [B,T,F//2,2]
+
+        x_selected = x
+        if self.normalize:
+            mean = tf_nan_mean(tf.gather(x, self.center, axis=2), axis=[1, 2], keepdims=True)
+            mean = tf.where(tf.math.is_nan(mean), tf.constant(0.5, x.dtype), mean)
+            std = tf_nan_std(x_selected, center=mean, axis=[1, 2], keepdims=True)
+            x = (x_selected - mean) / std
+        else:
+            x = x_selected
+
+        dx = tf.cond(
+            tf.shape(x)[1] > 1,
+            lambda: tf.pad(x[:, 1:] - x[:, :-1], [[0, 0], [0, 1], [0, 0], [0, 0]]),
+            lambda: tf.zeros_like(x),
+        )
+
+        dx2 = tf.cond(
+            tf.shape(x)[1] > 2,
+            lambda: tf.pad(x[:, 2:] - x[:, :-2], [[0, 0], [0, 2], [0, 0], [0, 0]]),
+            lambda: tf.zeros_like(x),
+        )
+        length = tf.shape(x)[1]
+
+        x = tf.concat(
+            [
+                tf.reshape(x, (-1, length, 2 * Constants.NUM_NODES)),  # x1,y1,x2,y2,...
+                tf.reshape(dx, (-1, length, 2 * Constants.NUM_NODES)),
+                tf.reshape(dx2, (-1, length, 2 * Constants.NUM_NODES)),
+            ],
+            axis=-1,
+        )
+
+        # x1,y1,x2,y2,...dx1,dy1,dx2,dy2,...
+        x = tf.where(tf.math.is_nan(x), tf.constant(0.0, x.dtype), x)
+        return x
+
+
+def pad_if_short(x, max_len):
+    # shape (T,F)
+    pad_len = max_len - tf.shape(x)[0]
+    padding = tf.ones((pad_len, tf.shape(x)[1]), dtype=x.dtype) * Constants.INPUT_PAD
+    x = tf.concat([x, padding], axis=0)
     return x
 
 
-def preprocess(x, max_len, augment=False):
-    coord = x["coordinates"]
-    ref_points = list(range(Constants.NUM_NODES))
-    coord = filter_nans_tf(coord, ref_points)
+def shrink_if_long(x, max_len):
+    # shape is [T,F]
+    if tf.shape(x)[0] > max_len:
+        # we need to extend the dimension to [T,F,channels]  for tf.image.resize
+        x = tf.image.resize(x[..., None], (max_len, tf.shape(x)[1]))
+        x = tf.squeeze(x, axis=2)
+    return x
 
-    if augment:
-        coord = augment_fn(coord, max_len=max_len)
-    coord = shrink_if_long(coord, max_len=max_len)
 
-    nrows = Constants.NUM_NODES
-    coord = tf.ensure_shape(coord, (None, nrows, 2))
-    coord = tf.cast(Preprocess(max_len=max_len)(coord)[0], tf.float32)
+@tf.function()
+def preprocess(x, max_len, do_pad=True):
+    # shape (T,F)
+    x = shrink_if_long(x, max_len=max_len)
+    # Preprocess expects a batch, so we extend the dimension to (None,T,F), then reduce the output back to (T,F).
+    x = tf.cast(Preprocess(max_len=max_len)(x[None, ...])[0], tf.float32)
 
-    return (coord, x["label"])
+    if do_pad:  # we can avoid this step if there is batch padding
+        x = pad_if_short(x, max_len=max_len)
+
+    return x
 
 
 def get_dataset(
@@ -325,37 +322,35 @@ def get_dataset(
     batch_size=64,
     drop_remainder=False,
     augment=False,
-    shuffle=False,
+    shuffle_buffer=None,
     repeat=False,
 ):
     ds = tf.data.Dataset.from_generator(
         create_gen(filenames, input_path),
-        output_signature={
-            "coordinates": tf.TensorSpec(shape=(None, Constants.NUM_NODES, 2), dtype=tf.float32),
-            "label": tf.TensorSpec(shape=(None,), dtype=tf.int64),
-        },
+        output_signature=(
+            tf.TensorSpec(shape=(None, 2 * Constants.NUM_NODES), dtype=tf.float32),  # (T,F)
+            tf.TensorSpec(shape=(None,), dtype=tf.int64),
+        ),
     )
-    ds = ds.cache()
-    ds = ds.map(lambda x: preprocess(x, augment=augment, max_len=max_len), tf.data.AUTOTUNE)
+    # ds = ds.cache()
+    if augment:
+        ds = ds.map(lambda x, y: (augment_fn(x), y), tf.data.AUTOTUNE)
+    ds = ds.map(lambda x, y: (preprocess(x, max_len=max_len, do_pad=False), y), tf.data.AUTOTUNE)
     if repeat:
         ds = ds.repeat()
 
-    if shuffle:
-        ds = ds.shuffle(shuffle)
-        options = tf.data.Options()
-        options.experimental_deterministic = False
-        ds = ds.with_options(options)
+    if shuffle_buffer is not None:
+        ds = ds.shuffle(shuffle_buffer)
 
-    if batch_size:
-        ds = ds.padded_batch(
-            batch_size,
-            padding_values=(
-                tf.constant(Constants.INPUT_PAD, dtype=tf.float32),
-                tf.constant(Constants.LABEL_PAD, dtype=tf.int64),
-            ),
-            padded_shapes=([max_len, Constants.CHANNELS], [Constants.MAX_STRING_LEN]),
-            drop_remainder=drop_remainder,
-        )
+    ds = ds.padded_batch(
+        batch_size,
+        padding_values=(
+            tf.constant(Constants.INPUT_PAD, dtype=tf.float32),
+            tf.constant(Constants.LABEL_PAD, dtype=tf.int64),
+        ),
+        padded_shapes=([max_len, Constants.CHANNELS], [Constants.MAX_STRING_LEN]),
+        drop_remainder=drop_remainder,
+    )
 
     ds = ds.prefetch(tf.data.AUTOTUNE)
 
@@ -377,11 +372,9 @@ def explore(ds, n=3):
         break
 
 
-def train_run(
-    train_files, valid_files, num_train, num_valid, summary=True, config=CFG, experiment_id=0
-):
-    tf.keras.backend.clear_session()
+def train_run(train_files, valid_files, num_train, summary=True, config=CFG, experiment_id=0):
     gc.collect()
+    tf.keras.backend.clear_session()
     # tf.config.optimizer.set_jit("autoclustering")
 
     if config.fp16:
@@ -392,12 +385,11 @@ def train_run(
     else:
         policy = "float32"
     tf.keras.mixed_precision.set_global_policy(policy)
+
     augment_train = True
     repeat_train = True
-    # augment_train = False
-    # repeat_train = False
 
-    shuffle = 8192
+    shuffle_buffer = 8192
     train_ds = get_dataset(
         train_files,
         input_path=config.input_path,
@@ -406,7 +398,7 @@ def train_run(
         drop_remainder=True,
         augment=augment_train,
         repeat=repeat_train,
-        shuffle=shuffle,
+        shuffle_buffer=shuffle_buffer,
     )
     if valid_files is not None:
         valid_ds = get_dataset(
@@ -419,8 +411,12 @@ def train_run(
         valid_ds = None
         valid_files = []
 
+    # num_train = count_data_items(train_ds)
+    # num_valid = count_data_items(valid_ds)
+    # print(num_train, num_valid, config.batch_size)
+    # exit()
+
     steps_per_epoch = num_train // config.batch_size
-    valid_steps = num_valid // config.batch_size
     strategy = config.strategy
     with strategy.scope():
         model = get_model(
@@ -430,11 +426,7 @@ def train_run(
             dim=config.dim,
         )
         awp_step = config.awp_start_epoch * steps_per_epoch
-        if config.fgm:
-            model = FGM(
-                model.input, model.output, delta=config.awp_lambda, eps=0.0, start_step=awp_step
-            )
-        elif config.awp:
+        if config.awp:
             model = AWP(
                 model.input, model.output, delta=config.awp_lambda, eps=0.0, start_step=awp_step
             )
@@ -466,7 +458,7 @@ def train_run(
         print(train_ds, valid_ds)
         print()
     print(f"---------experiment {experiment_id}---------")
-    print(f"train:{num_train} valid:{num_valid}")
+    print(f"train:{num_train} ")
     print()
 
     if config.resume:
@@ -477,9 +469,6 @@ def train_run(
         if valid_ds is not None:
             model.evaluate(valid_ds)
 
-    csv_logger = tf.keras.callbacks.CSVLogger(
-        f"{config.log_path}/{config.comment}-exp{experiment_id}-logs.csv"
-    )
     tb_logger = tf.keras.callbacks.TensorBoard(
         log_dir="config.log_path", histogram_freq=0, write_graph=True, write_images=True
     )
@@ -492,9 +481,7 @@ def train_run(
         mode="min",
         save_freq="epoch",
     )
-    snap = Snapshot(
-        f"{config.log_path}/{config.comment}-exp{experiment_id}", config.snapshot_epochs
-    )
+    memory_usage = MemoryUsageCallbackExtended()
     # stochastic weight averaging
     swa = SWA(
         f"{config.log_path}/{config.comment}-exp{experiment_id}",
@@ -502,20 +489,18 @@ def train_run(
         strategy=strategy,
         train_ds=train_ds,
         valid_ds=valid_ds,
-        valid_steps=valid_steps,
     )
 
     # Callback function to check transcription on the val set.
     # validation_callback = CallbackEval(model, valid_ds)
     callbacks = []
     if config.save_output:
-        callbacks.append(csv_logger)
         callbacks.append(tb_logger)
-        callbacks.append(snap)
         # callbacks.append(swa)
         callbacks.append(sv_loss)
 
-    callbacks.append(tf.keras.callbacks.TerminateOnNaN())
+    callbacks.append(memory_usage)
+    # callbacks.append(tf.keras.callbacks.TerminateOnNaN())
     # callbacks.append(validation_callback)
 
     history = model.fit(
@@ -535,7 +520,7 @@ def train_run(
         else:
             print(f"Warning: could not find {saved_based_model}")
     if valid_ds is not None:
-        cv = model.evaluate(valid_ds, verbose=config.verbose, steps=valid_steps)
+        cv = model.evaluate(valid_ds, verbose=config.verbose)
     else:
         cv = None
     return model, cv, history
@@ -556,22 +541,16 @@ def train(config=CFG, experiment_id=0, use_supplemental=True):
     train_files = data_filenames[config.num_eval :]
     random.shuffle(train_files)
 
-    # num_train = count_data_items(train_ds)
-    # num_valid = count_data_items(valid_ds)
-    # print(num_train, num_valid, config.batch_size)
-
     if use_supplemental:
-        num_train = 3401 * 32  # with supplemental
+        num_train = 3567 * 32  # with supplemental
     else:
-        num_train = 1716 * 32  # without supplemental
+        num_train = 1912 * 32  # without supplemental
 
-    num_valid = 191 * 32  # first 6 files
-
+    print(num_train)
     train_run(
         train_files,
         valid_files,
         num_train,
-        num_valid,
         summary=True,
         config=config,
         experiment_id=experiment_id,

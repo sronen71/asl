@@ -1,8 +1,23 @@
 import tensorflow as tf
 import numpy as np
+import pandas as pd
+import gc
+import psutil
+import os
 from .constants import Constants
 
 from Levenshtein import distance as Lev_distance
+
+
+def selected_columns(file_example):
+    df = pd.read_parquet(file_example)
+    selected_x = df.columns[[x + 1 for x in Constants.POINT_LANDMARKS]].tolist()
+    selected_y = [c.replace("x", "y") for c in selected_x]
+    selected = []
+    for i in range(Constants.NUM_NODES):
+        selected.append(selected_x[i])
+        selected.append(selected_y[i])
+    return selected  # x1,y1,x2,y2,...
 
 
 class SWA(tf.keras.callbacks.Callback):
@@ -15,7 +30,6 @@ class SWA(tf.keras.callbacks.Callback):
         train_ds=None,
         valid_ds=None,
         train_steps=1000,
-        valid_steps=None,
     ):
         super().__init__()
         self.swa_epochs = swa_epochs
@@ -24,7 +38,6 @@ class SWA(tf.keras.callbacks.Callback):
         self.train_ds = train_ds
         self.valid_ds = valid_ds
         self.train_steps = train_steps
-        self.valid_steps = valid_steps
         self.strategy = strategy
 
     # @tf.function(jit_compile=True)
@@ -59,53 +72,7 @@ class SWA(tf.keras.callbacks.Callback):
             print(f"save SWA weights to {self.save_name}-SWA.h5")
             self.model.save_weights(f"{self.save_name}-SWA.h5")
             if self.valid_ds is not None:
-                self.model.evaluate(self.valid_ds, steps=self.valid_steps)
-
-
-class FGM(tf.keras.Model):
-    # Fast Gradient Method
-    def __init__(self, *args, delta=0.2, eps=1e-4, start_step=0, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.delta = delta
-        self.eps = eps
-        self.start_step = start_step
-
-    def train_step_fgm(self, data):
-        # Unpack the data. Its structure depends on your model and
-        # on what you pass to `fit()`.
-        x, y = data
-
-        with tf.GradientTape() as tape:
-            y_pred = self(x, training=True)
-            loss = self.compiled_loss(y, y_pred, regularization_losses=self.losses)
-        embedding = self.trainable_variables[0]
-        embedding_gradients = tape.gradient(loss, [self.trainable_variables[0]])[0]
-        embedding_gradients = tf.zeros_like(embedding) + embedding_gradients
-        delta = tf.math.divide_no_nan(
-            self.delta * embedding_gradients,
-            tf.math.sqrt(tf.reduce_sum(embedding_gradients**2)) + self.eps,
-        )
-        self.trainable_variables[0].assign_add(delta)
-        with tf.GradientTape() as tape2:
-            y_pred = self(x, training=True)
-            new_loss = self.compiled_loss(y, y_pred, regularization_losses=self.losses)
-            if hasattr(self.optimizer, "get_scaled_loss"):
-                new_loss = self.optimizer.get_scaled_loss(new_loss)
-        gradients = tape2.gradient(new_loss, self.trainable_variables)
-        if hasattr(self.optimizer, "get_unscaled_gradients"):
-            gradients = self.optimizer.get_unscaled_gradients(gradients)
-        self.trainable_variables[0].assign_sub(delta)
-        self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
-        # self_loss.update_state(loss)
-        self.compiled_metrics.update_state(y, y_pred)
-        return {m.name: m.result() for m in self.metrics}
-
-    def train_step(self, data):
-        return tf.cond(
-            self._train_counter < self.start_step,
-            lambda: super(FGM, self).train_step(data),
-            lambda: self.train_step_fgm(data),
-        )
+                self.model.evaluate(self.valid_ds)
 
 
 class AWP(tf.keras.Model):
@@ -158,19 +125,6 @@ class AWP(tf.keras.Model):
             lambda: super(AWP, self).train_step(data),
             lambda: self.train_step_awp(data),
         )
-
-
-class Snapshot(tf.keras.callbacks.Callback):
-    def __init__(self, save_name, snapshot_epochs=[]):
-        super().__init__()
-        self.snapshot_epochs = snapshot_epochs
-        self.save_name = save_name
-
-    def on_epoch_end(self, epoch, logs=None):
-        # logs is a dictionary
-        if epoch in self.snapshot_epochs:  # your custom condition
-            self.model.save_weights(f"{self.save_name}-epoch{epoch}.h5")
-        self.model.save_weights(f"{self.save_name}-last.h5")
 
 
 def num_to_char_fn(y):
@@ -331,3 +285,19 @@ class LevDistanceMetric(tf.keras.metrics.Metric):
     def reset_state(self):
         self.count.assign(0.0)
         self.distance.assign(0.0)
+
+
+class MemoryUsageCallbackExtended(tf.keras.callbacks.Callback):
+    """Monitor memory usage on epoch begin and end, collect garbage"""
+
+    # def on_epoch_begin(self, epoch, logs=None):
+    #    print("**Epoch {}**".format(epoch))
+    #    print(
+    #        f"Memory usage on epoch begin: {int(psutil.Process(os.getpid()).memory_info().rss)/1e9:.2f GB}"
+    #    )
+
+    def on_epoch_end(self, epoch, logs=None):
+        print(
+            f"Memory usage on epoch end: {int(psutil.Process(os.getpid()).memory_info().rss)/1e9:.2f} GB"
+        )
+        gc.collect()

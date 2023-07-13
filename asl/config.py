@@ -43,7 +43,7 @@ class CFG:
     n_splits = 5
     save_output = True
     log_path = "logs"
-    input_path = "/kaggle/input/"
+    input_path = "/kaggle/input/asl-fingerspelling/"
     output_path = "/kaggle/working/"
 
     seed = 42
@@ -63,7 +63,6 @@ class CFG:
 
     fp16 = True
     # fp16 = False
-    fgm = False
     awp = False
     awp_lambda = 0.2
     awp_start_epoch = 15

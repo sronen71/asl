@@ -209,7 +209,7 @@ def build_model1(
     with_transformer=False,
     drop_rate=0.2,
 ):
-    inp = tf.keras.Input((max_len, Constants.CHANNELS))
+    inp = tf.keras.Input(shape=(max_len, Constants.CHANNELS), dtype=tf.float32, name="inputs")
     x = tf.keras.layers.Masking(mask_value=input_pad, input_shape=(max_len, Constants.CHANNELS))(
         inp
     )
