@@ -17,6 +17,7 @@ from .utils import (
 from .constants import Constants
 from .config import CFG, update_config_with_strategy
 from .model import get_model, CTCLoss
+from .scheduler import CosineDecay
 
 
 def create_gen(file_names, input_path):
@@ -324,6 +325,9 @@ def get_dataset(
     shuffle_buffer=None,
     repeat=False,
 ):
+    ignore_order = tf.data.Options()
+    ignore_order.experimental_deterministic = False
+
     ds = tf.data.Dataset.from_generator(
         create_gen(filenames, input_path),
         output_signature=(
@@ -331,6 +335,7 @@ def get_dataset(
             tf.TensorSpec(shape=(None,), dtype=tf.int64),
         ),
     )
+    ds.with_options(ignore_order)
     # ds = ds.cache()
     if augment:
         ds = ds.map(lambda x, y: (augment_fn(x), y), tf.data.AUTOTUNE)
@@ -371,7 +376,7 @@ def explore(ds, n=3):
         break
 
 
-def train_run(train_files, valid_files, num_train, config=CFG, experiment_id=0, summary=False):
+def train_run(train_files, valid_files, config, num_train, experiment_id=0, summary=False):
     gc.collect()
     tf.keras.backend.clear_session()
     # tf.config.optimizer.set_jit("autoclustering")
@@ -430,7 +435,8 @@ def train_run(train_files, valid_files, num_train, config=CFG, experiment_id=0, 
                 model.input, model.output, delta=config.awp_lambda, eps=0.0, start_step=awp_step
             )
         base_lr = config.lr
-        lr_schedule = tf.keras.optimizers.schedules.CosineDecay(
+        # lr_schedule = tf.keras.optimizers.schedules.CosineDecay(
+        lr_schedule = CosineDecay(
             initial_learning_rate=base_lr / 10,
             decay_steps=int(0.95 * steps_per_epoch * config.epochs),
             alpha=0.02,
@@ -527,9 +533,10 @@ def train_run(train_files, valid_files, num_train, config=CFG, experiment_id=0, 
 
 
 def train(cfg=CFG, experiment_id=0, use_supplemental=True):
-    config = cfg()
     tf.keras.backend.clear_session()
+    config = cfg()
     update_config_with_strategy(config)
+    print(f"using {config.replicas} replicas")
     seed_everything(config.seed)
 
     data_filenames = sorted(glob.glob(config.input_path + "train_landmarks/*.parquet"))
@@ -552,8 +559,8 @@ def train(cfg=CFG, experiment_id=0, use_supplemental=True):
     train_run(
         train_files,
         valid_files,
+        config,
         num_train,
         summary=False,
-        config=config,
         experiment_id=experiment_id,
     )

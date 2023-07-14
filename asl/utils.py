@@ -249,6 +249,7 @@ def sparse_from_dense_ignore_value(dense_tensor):
     mask = tf.not_equal(dense_tensor, Constants.LABEL_PAD)
     indices = tf.where(mask)
     values = tf.boolean_mask(dense_tensor, mask)
+
     return tf.SparseTensor(indices, values, tf.shape(dense_tensor, out_type=tf.int64))
 
 
@@ -264,7 +265,7 @@ def batch_edit_distance(y_true, y_logits):
         0
     ]  # full is [B,...]
     truth = sparse_from_dense_ignore_value(y_true)  # full is [B,...]
-
+    truth = tf.cast(truth, tf.int64)
     edit_dist = tf.edit_distance(hypothesis, truth, normalize=False)
 
     non_ignore_mask = tf.not_equal(y_true, blank)

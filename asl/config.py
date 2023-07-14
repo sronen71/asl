@@ -1,4 +1,6 @@
 import tensorflow as tf
+from tensorflow.python.framework.ops import disable_eager_execution
+
 
 gpus = tf.config.list_physical_devices("GPU")
 for gpu in gpus:
@@ -12,38 +14,46 @@ def get_strategy():
     gpu_available = any("GPU" in device.name for device in logical_devices)
     strategy = None
     is_tpu = False
+    # if tf.executing_eagerly()
     try:
         tpu = tf.distribute.cluster_resolver.TPUClusterResolver()
         print("Running on TPU ", tpu.master())
-        tf.config.experimental_connect_to_cluster(tpu)
-        strategy = tf.distribute.TPUStrategy(tpu)
         is_tpu = True
     except ValueError:
-        pass
+        is_tpu = False
 
     if is_tpu:
-        pass
-    elif gpu_available:
-        gpus = tf.config.list_physical_devices("GPU")
-        # for gpu in gpus:
-        #    tf.config.experimental.set_memory_growth(gpu, True)
-        ngpu = len(gpus)
-        print("Num GPUs Available: ", ngpu)
-        if ngpu > 1:
-            strategy = tf.distribute.MirroredStrategy()
-        else:
-            strategy = tf.distribute.get_strategy()
+        tf.config.experimental_connect_to_cluster(tpu)
+        strategy = tf.distribute.TPUStrategy(tpu)
+        disable_eager_execution()  # LSTM layer can't use bfloat16 unless we do this.
 
     else:
-        strategy = tf.distribute.get_strategy()
+        if gpu_available:
+            gpus = tf.config.list_physical_devices("GPU")
+            # for gpu in gpus:
+            #    tf.config.experimental.set_memory_growth(gpu, True)
+            ngpu = len(gpus)
+            print("Num GPUs Available: ", ngpu)
+            if ngpu > 1:
+                strategy = tf.distribute.MirroredStrategy()
+            else:
+                strategy = tf.distribute.get_strategy()
+
+        else:
+            strategy = tf.distribute.get_strategy()
     replicas = strategy.num_replicas_in_sync
-    print(f"REPLICAS: {replicas}")
+
+    print(f"get strategy replicas: {replicas}")
 
     return strategy, replicas, is_tpu
 
 
 class CFG:
-    strategy, replicas, is_tpu = get_strategy()
+    # These 3 variables are update dynamically later by calling update_config_with_strategy.
+    strategy = None  # type: ignore
+    replicas = 1
+    is_tpu = False
+
     n_splits = 5
     save_output = True
     log_path = "logs"
