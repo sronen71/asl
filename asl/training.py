@@ -349,7 +349,6 @@ def get_dataset(
             filenames, num_parallel_reads=tf.data.AUTOTUNE, compression_type="GZIP"
         )
         ds = ds.map(decode_tfrec, tf.data.AUTOTUNE)
-        ds = ds.cache()
     else:
         ds = tf.data.Dataset.from_generator(
             create_gen(filenames, input_path),
@@ -570,13 +569,14 @@ def train(cfg=CFG, experiment_id=0, use_supplemental=True, use_tfrecords=True):
         data_filenames = sorted(glob.glob(config.input_path + "records/*.tfrecord"))
         if not use_supplemental:
             data_filenames = [x for x in data_filenames if "supp" not in x]
-
+        print("Using TFRECORDS")
     else:
         data_filenames = sorted(glob.glob(config.input_path + "train_landmarks/*.parquet"))
         if use_supplemental:
             data_filenames += sorted(
                 glob.glob(config.input_path + "supplemental_landmarks/*.parquet")
             )
+        print("Using Parquet")
     """
     ds = get_dataset(
         data_filenames,
