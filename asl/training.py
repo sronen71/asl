@@ -52,6 +52,21 @@ def create_gen(file_names, input_path):
     return gen
 
 
+def decode_tfrec(record_bytes):
+    features = tf.io.parse_single_example(
+        record_bytes,
+        {
+            "coordinates": tf.io.VarLenFeature(tf.float32),
+            "label": tf.io.VarLenFeature(tf.int64),
+        },
+    )
+    coords = tf.sparse.to_dense(features["coordinates"])
+    coords = tf.reshape(coords, (-1, Constants.NUM_INPUT_FEATURES))
+    label = tf.sparse.to_dense(features["label"])
+
+    return (coords, label)
+
+
 def count_data_items(dataset):
     dataset_size = 0
     for _ in dataset:
@@ -324,19 +339,28 @@ def get_dataset(
     augment=False,
     shuffle_buffer=None,
     repeat=False,
+    use_tfrecords=True,
 ):
     ignore_order = tf.data.Options()
     ignore_order.experimental_deterministic = False
 
-    ds = tf.data.Dataset.from_generator(
-        create_gen(filenames, input_path),
-        output_signature=(
-            tf.TensorSpec(shape=(None, 2 * Constants.NUM_NODES), dtype=tf.float32),  # (T,F)
-            tf.TensorSpec(shape=(None,), dtype=tf.int64),
-        ),
-    )
+    if use_tfrecords:
+        ds = tf.data.TFRecordDataset(
+            filenames, num_parallel_reads=tf.data.AUTOTUNE, compression_type="GZIP"
+        )
+        ds = ds.map(decode_tfrec, tf.data.AUTOTUNE)
+        ds = ds.cache()
+    else:
+        ds = tf.data.Dataset.from_generator(
+            create_gen(filenames, input_path),
+            output_signature=(
+                tf.TensorSpec(
+                    shape=(None, Constants.NUM_INPUT_FEATURES), dtype=tf.float32
+                ),  # (T,F)
+                tf.TensorSpec(shape=(None,), dtype=tf.int64),
+            ),
+        )
     ds.with_options(ignore_order)
-    # ds = ds.cache()
     if augment:
         ds = ds.map(lambda x, y: (augment_fn(x), y), tf.data.AUTOTUNE)
     ds = ds.map(lambda x, y: (preprocess(x, max_len=max_len, do_pad=False), y), tf.data.AUTOTUNE)
@@ -355,7 +379,6 @@ def get_dataset(
         padded_shapes=([max_len, Constants.CHANNELS], [Constants.MAX_STRING_LEN]),
         drop_remainder=drop_remainder,
     )
-
     ds = ds.prefetch(tf.data.AUTOTUNE)
 
     return ds
@@ -376,7 +399,9 @@ def explore(ds, n=3):
         break
 
 
-def train_run(train_files, valid_files, config, num_train, experiment_id=0, summary=False):
+def train_run(
+    train_files, valid_files, config, num_train, experiment_id=0, use_tfrecords=True, summary=False
+):
     gc.collect()
     tf.keras.backend.clear_session()
     # tf.config.optimizer.set_jit("autoclustering")
@@ -403,6 +428,7 @@ def train_run(train_files, valid_files, config, num_train, experiment_id=0, summ
         augment=augment_train,
         repeat=repeat_train,
         shuffle_buffer=shuffle_buffer,
+        use_tfrecords=use_tfrecords,
     )
     if valid_files is not None:
         valid_ds = get_dataset(
@@ -410,6 +436,7 @@ def train_run(train_files, valid_files, config, num_train, experiment_id=0, summ
             input_path=config.input_path,
             max_len=config.max_len,
             batch_size=config.batch_size,
+            use_tfrecords=use_tfrecords,
         )
     else:
         valid_ds = None
@@ -489,13 +516,13 @@ def train_run(train_files, valid_files, config, num_train, experiment_id=0, summ
     )
     memory_usage = MemoryUsageCallbackExtended()
     # stochastic weight averaging
-    swa = SWA(
-        f"{config.log_path}/{config.comment}-exp{experiment_id}",
-        config.swa_epochs,
-        strategy=strategy,
-        train_ds=train_ds,
-        valid_ds=valid_ds,
-    )
+    # swa = SWA(
+    #    f"{config.log_path}/{config.comment}-exp{experiment_id}",
+    #    config.swa_epochs,
+    #    strategy=strategy,
+    #    train_ds=train_ds,
+    #    valid_ds=valid_ds,
+    # )
 
     # Callback function to check transcription on the val set.
     # validation_callback = CallbackEval(model, valid_ds)
@@ -532,18 +559,37 @@ def train_run(train_files, valid_files, config, num_train, experiment_id=0, summ
     return model, cv, history
 
 
-def train(cfg=CFG, experiment_id=0, use_supplemental=True):
+def train(cfg=CFG, experiment_id=0, use_supplemental=True, use_tfrecords=True):
     tf.keras.backend.clear_session()
     config = cfg()
     update_config_with_strategy(config)
     print(f"using {config.replicas} replicas")
     seed_everything(config.seed)
 
-    data_filenames = sorted(glob.glob(config.input_path + "train_landmarks/*.parquet"))
-    if use_supplemental:
-        data_filenames += sorted(glob.glob(config.input_path + "supplemental_landmarks/*.parquet"))
+    if use_tfrecords:
+        data_filenames = sorted(glob.glob(config.input_path + "records/*.tfrecord"))
+        if not use_supplemental:
+            data_filenames = [x for x in data_filenames if "supp" not in x]
 
-    # ds = get_dataset(data_filenames, max_len=CFG.max_len, augment=True, batch_size=1024)
+    else:
+        data_filenames = sorted(glob.glob(config.input_path + "train_landmarks/*.parquet"))
+        if use_supplemental:
+            data_filenames += sorted(
+                glob.glob(config.input_path + "supplemental_landmarks/*.parquet")
+            )
+    """
+    ds = get_dataset(
+        data_filenames,
+        input_path=config.input_path,
+        max_len=CFG.max_len,
+        augment=True,
+        batch_size=1024,
+        use_tfrecords=use_tfrecords,
+    )
+
+    # for x, y in ds:
+    #    print(x.shape, y.shape)
+    """
     # explore(ds)
     # exit()
     valid_files = data_filenames[: config.num_eval]  # first part in list
@@ -556,6 +602,8 @@ def train(cfg=CFG, experiment_id=0, use_supplemental=True):
         num_train = 1912 * 32  # without supplemental
 
     print(num_train)
+    # tf.config.run_functions_eagerly(True)
+    # tf.data.experimental.enable_debug_mode()
     train_run(
         train_files,
         valid_files,
@@ -563,4 +611,5 @@ def train(cfg=CFG, experiment_id=0, use_supplemental=True):
         num_train,
         summary=False,
         experiment_id=experiment_id,
+        use_tfrecords=use_tfrecords,
     )
