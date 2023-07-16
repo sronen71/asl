@@ -63,7 +63,6 @@ def decode_tfrec(record_bytes):
     coords = tf.sparse.to_dense(features["coordinates"])
     coords = tf.reshape(coords, (-1, Constants.NUM_INPUT_FEATURES))
     label = tf.sparse.to_dense(features["label"])
-
     return (coords, label)
 
 
@@ -231,9 +230,8 @@ def spatial_mask(x, size=(0.05, 0.2), mask_value=float("nan")):
     return x
 
 
-@tf.function()
+# @tf.function()
 def augment_fn(x):
-    # shape (T,F)
     x = tf.reshape(x, (tf.shape(x)[0], -1, 2))
     if tf.random.uniform(()) < 0.4:
         x = resample(x, (0.5, 1.5))
@@ -317,7 +315,7 @@ def shrink_if_long(x, max_len):
     return x
 
 
-@tf.function()
+# @tf.function()
 def preprocess(x, max_len, do_pad=True):
     # shape (T,F)
     x = shrink_if_long(x, max_len=max_len)
@@ -558,7 +556,7 @@ def train_run(
     return model, cv, history
 
 
-def train(cfg=CFG, experiment_id=0, use_supplemental=True, use_tfrecords=True):
+def train(cfg=CFG, experiment_id=0, use_supplemental=True, use_tfrecords=False):
     tf.keras.backend.clear_session()
     config = cfg()
     update_config_with_strategy(config)
@@ -566,9 +564,12 @@ def train(cfg=CFG, experiment_id=0, use_supplemental=True, use_tfrecords=True):
     seed_everything(config.seed)
 
     if use_tfrecords:
-        data_filenames = sorted(glob.glob(config.input_path + "records/*.tfrecord"))
-        if not use_supplemental:
-            data_filenames = [x for x in data_filenames if "supp" not in x]
+        all_filenames = sorted(glob.glob("/kaggle/input/asl-preprocessing/records/*.tfrecord"))
+        regular = [x for x in all_filenames if "supp" not in x]
+        supp = [x for x in all_filenames if "supp" in x]
+        data_filenames = regular
+        if use_supplemental:
+            data_filenames += supp
         print("Using TFRECORDS")
     else:
         data_filenames = sorted(glob.glob(config.input_path + "train_landmarks/*.parquet"))
@@ -583,12 +584,12 @@ def train(cfg=CFG, experiment_id=0, use_supplemental=True, use_tfrecords=True):
         input_path=config.input_path,
         max_len=CFG.max_len,
         augment=True,
-        batch_size=1024,
+        batch_size=64,
         use_tfrecords=use_tfrecords,
     )
 
-    # for x, y in ds:
-    #    print(x.shape, y.shape)
+    for x, y in ds:
+        print(x.shape, y.shape)
     """
     # explore(ds)
     # exit()
@@ -602,14 +603,12 @@ def train(cfg=CFG, experiment_id=0, use_supplemental=True, use_tfrecords=True):
         num_train = 1912 * 32  # without supplemental
 
     print(num_train)
-    # tf.config.run_functions_eagerly(True)
-    # tf.data.experimental.enable_debug_mode()
     train_run(
         train_files,
         valid_files,
         config,
         num_train,
-        summary=False,
+        summary=True,
         experiment_id=experiment_id,
         use_tfrecords=use_tfrecords,
     )

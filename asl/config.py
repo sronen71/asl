@@ -53,8 +53,6 @@ class CFG:
     strategy = None  # type: ignore
     replicas = 1
     is_tpu = False
-
-    n_splits = 5
     save_output = True
     log_path = "logs"
     input_path = "/kaggle/input/asl-fingerspelling/"
@@ -67,10 +65,10 @@ class CFG:
     max_len = 256
     # max_len = 128
     replicas = 1
-    lr = 5e-4 * replicas  # 5e-4
+    lr = 5e-4  # 5e-4 # pre replica
     weight_decay = 1e-4  # 4e-4
     epochs = 80  # 400
-    batch_size = 128 * replicas
+    batch_size = 128  # per replica
     snapshot_epochs = []  # type: ignore
     swa_epochs = []  # type: ignore
     # list(range(epoch//2,epoch+1))
