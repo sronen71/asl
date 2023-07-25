@@ -2,7 +2,7 @@
   "id": "shaironen/asl-training",
   "id_no": 41080545,
   "title": "ASL Training",
-  "code_file": "asl-train.ipynb",
+  "code_file": "asl-training.ipynb",
   "language": "python",
   "kernel_type": "notebook",
   "is_private": true,
