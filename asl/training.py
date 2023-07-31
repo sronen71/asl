@@ -381,7 +381,7 @@ def get_dataset(
     return ds
 
 
-def explore(ds, n=3):
+def explore(ds, n=10):
     counter = 0
     for feature, label in ds:  # , sequence_id in ds:
         feature = feature.numpy()  # [batch,frames,features]
@@ -564,21 +564,24 @@ def train(cfg=CFG, experiment_id=0, use_supplemental=True, use_tfrecords=False):
     seed_everything(config.seed)
 
     if use_tfrecords:
-        all_filenames = sorted(glob.glob("/kaggle/input/asl-preprocessing/records/*.tfrecord"))
-        regular = [x for x in all_filenames if "supp" not in x]
+        all_filenames = sorted(glob.glob("/kaggle/input/sign-tfrecords/*.tfrecord"))
+        regular = [x for x in all_filenames if "train" not in x]
         supp = [x for x in all_filenames if "supp" in x]
-        data_filenames = regular
-        if use_supplemental:
-            data_filenames += supp
+        chicago = [x for x in all_filenames if "chicago" in x]
+        # data_filenames = regular
+        # if use_supplemental:
+        #    data_filenames += supp
+        data_filenames = chicago
         print("Using TFRECORDS")
     else:
-        data_filenames = sorted(glob.glob(config.input_path + "train_landmarks/*.parquet"))
+        # data_filenames = sorted(glob.glob(config.input_path + "train_landmarks/*.parquet"))
+        data_filenames = sorted(glob.glob(config.input_path + "chicago/*.parquet"))
         if use_supplemental:
             data_filenames += sorted(
                 glob.glob(config.input_path + "supplemental_landmarks/*.parquet")
             )
         print("Using Parquet")
-    """
+
     ds = get_dataset(
         data_filenames,
         input_path=config.input_path,
@@ -588,11 +591,12 @@ def train(cfg=CFG, experiment_id=0, use_supplemental=True, use_tfrecords=False):
         use_tfrecords=use_tfrecords,
     )
 
-    for x, y in ds:
-        print(x.shape, y.shape)
-    """
-    # explore(ds)
-    # exit()
+    # for x, y in ds:
+    #   print(x.shape, y.shape)
+
+    explore(ds)
+    exit()
+
     valid_files = data_filenames[: config.num_eval]  # first part in list
     train_files = data_filenames[config.num_eval :]
     random.shuffle(train_files)

@@ -1,3 +1,3 @@
 from asl.training import train
 
-train(use_tfrecords=False)
+train(use_tfrecords=True)
